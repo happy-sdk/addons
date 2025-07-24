@@ -488,12 +488,7 @@ func (p *Package) getChangelog(sess *session.Context, rootPath string) error {
 	if err != nil {
 		return err
 	}
-	if changelog.HasMajorUpdate() || changelog.HasMinorUpdate() || changelog.HasPatchUpdate() {
 
-		fmt.Println(p.Dir)
-		fmt.Println(strings.Join(lastTagQuery, " "))
-		fmt.Println(logout)
-	}
 	p.Changelog = changelog
 	if p.Changelog.Empty() {
 		sess.Log().Debug("no changelog", slog.String("package", p.Import))
@@ -547,16 +542,17 @@ func buildExclusions(rootPath, localpath string) ([]string, error) {
 		// Convert to relative path from rootPath
 		relPath, err := filepath.Rel(rootPath, path)
 		if err != nil {
-			return filepath.SkipDir
+			return nil
 		}
 
+		// Skip if this is the same as our localpath (don't exclude ourselves)
 		if relPath == localpath || relPath == "." {
-			return filepath.SkipDir
+			return nil
 		}
 
 		// Skip if this directory is not nested under our localpath
 		if !strings.HasPrefix(relPath, localpath+string(filepath.Separator)) {
-			return filepath.SkipDir
+			return nil
 		}
 
 		shouldExclude := false
