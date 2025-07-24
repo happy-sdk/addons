@@ -62,6 +62,15 @@ func (prj *Project) Release(sess *session.Context, allowDirty, skipRemoteChecks 
 		releaser.AddTask(task)
 	}
 
+	releaser.Add("commmit", func(ex *tr.Executor) (res tr.Result) {
+		if gitutils.Dirty(sess, prj.Dir().Path, ".") {
+			if err := gitutils.Commit(sess, prj.Dir().Path, []string{"-A"}, fmt.Sprintf("chore(%s): :label: prepare release", path.Base(prj.Dir().Path))); err != nil {
+				return tr.Failure(err.Error())
+			}
+		}
+		return tr.Skip("clean")
+	})
+
 	// GOMODULES
 	previousTaskID, err = prj.releaseGomodules(sess, releaser, previousTaskID, skipRemoteChecks)
 	if err != nil {
@@ -86,9 +95,6 @@ func (prj *Project) releaseAllowed(sess *session.Context, r *tr.Runner, allowDir
 			msg := "project repository is dirty"
 			if !allowDirty {
 				return tr.Failure(msg)
-			}
-			if err := gitutils.Commit(sess, prj.Dir().Path, []string{"-A"}, fmt.Sprintf("chore(%s): prepare release", path.Base(prj.Dir().Path))); err != nil {
-				return tr.Failure(err.Error())
 			}
 			return tr.Notice(msg)
 		}
