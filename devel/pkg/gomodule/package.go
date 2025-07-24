@@ -135,9 +135,10 @@ func (p *Package) SetDep(dep string, ver version.Version) error {
 			if err != nil {
 				return err
 			}
-			if version.Compare(ver, requireModVersion) == 0 {
+			if version.Compare(ver, requireModVersion) <= 0 {
 				return nil
 			}
+			break
 		}
 	}
 
@@ -212,9 +213,10 @@ func (p *Package) LoadReleaseInfo(sess *session.Context, rootPath, remoteName st
 	}()
 
 	defer func() {
-		if err := p.AddMissing(sess); err != nil {
+		if err := p.addMissing(sess); err != nil {
 			sess.Log().Error(err.Error())
 		}
+
 	}()
 
 	if tagsout == "" {
@@ -702,11 +704,11 @@ type ModuleInfo struct {
 }
 
 // AddMissing adds missing dependencies to the modfile
-func (p *Package) AddMissing(sess *session.Context) error {
+func (p *Package) addMissing(sess *session.Context) error {
 	// Get all dependencies with their module info in one command
 	cmd := exec.Command("go", "list", "-deps", "-json", "./...")
 	cmd.Dir = p.Dir
-	output, err := cmd.Output()
+	output, err := cli.ExecRaw(sess, cmd)
 	if err != nil {
 		return fmt.Errorf("failed to get dependencies: %w", err)
 	}
@@ -748,7 +750,7 @@ func (p *Package) AddMissing(sess *session.Context) error {
 		if !isModuleInModfile(p.Modfile, modulePath) {
 			// Handle empty version by getting latest
 			if ver == "" {
-				ver, _ = getLatestVersion(modulePath, p.Dir)
+				ver, _ = GetLatestVersion(modulePath, p.Dir)
 			}
 			if err := p.SetDep(modulePath, version.Version(ver)); err != nil {
 				return err
@@ -777,36 +779,4 @@ func isModuleInModfile(mf *modfile.File, modulePath string) bool {
 		}
 	}
 	return false
-}
-
-// getLatestVersion gets the latest version for a module with multiple fallback strategies
-func getLatestVersion(modulePath, workDir string) (string, error) {
-	// Try @latest
-	if version := tryGetVersion(modulePath+"@latest", workDir); version != "" {
-		return version, nil
-	}
-
-	//  Try without version specifier (use whatever is available)
-	if version := tryGetVersion(modulePath, workDir); version != "" {
-		return version, nil
-	}
-
-	// Strategy 5: Generate a pseudo-version fallback
-	return "v0.0.0-00010101000000-000000000000", nil
-}
-
-func tryGetVersion(moduleQuery, workDir string) string {
-	cmd := exec.Command("go", "list", "-m", "-json", moduleQuery)
-	cmd.Dir = workDir
-	output, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-
-	var mod ModuleInfo
-	if err := json.Unmarshal(output, &mod); err != nil {
-		return ""
-	}
-
-	return mod.Version
 }

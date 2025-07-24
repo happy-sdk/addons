@@ -3,6 +3,12 @@ version: "1"
 releaser:
   enabled: true
 
+deps:
+  go:
+    latest:
+      - github.com/happy-sdk/happy
+      - github.com/happy-sdk/lib/taskrunner
+
 git:
   author:
     email: hello@happy-sdk.dev

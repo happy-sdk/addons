@@ -5,8 +5,10 @@
 package gomodule
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -181,4 +183,36 @@ func GetCommonDeps(pkgs []*Package) ([]Dependency, error) {
 		}
 	}
 	return commonDeps, nil
+}
+
+// GetLatestVersion gets the latest version for a module with multiple fallback strategies
+func GetLatestVersion(modulePath, workDir string) (string, error) {
+	// Try @latest
+	if version := tryGetVersion(modulePath+"@latest", workDir); version != "" {
+		return version, nil
+	}
+
+	//  Try without version specifier (use whatever is available)
+	if version := tryGetVersion(modulePath, workDir); version != "" {
+		return version, nil
+	}
+
+	// Strategy 5: Generate a pseudo-version fallback
+	return "v0.0.0-00010101000000-000000000000", nil
+}
+
+func tryGetVersion(moduleQuery, workDir string) string {
+	cmd := exec.Command("go", "list", "-m", "-json", moduleQuery)
+	cmd.Dir = workDir
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	var mod ModuleInfo
+	if err := json.Unmarshal(output, &mod); err != nil {
+		return ""
+	}
+
+	return mod.Version
 }

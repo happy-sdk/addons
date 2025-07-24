@@ -20,11 +20,12 @@ import (
 type Config struct {
 	Version version.Setting `key:"version,save" default:"v1.0.0"`
 
-	Changelog changelog.Config `key:"changelog"`
-	Git       GitConfig        `key:"git"`
-	Linter    LinterConfig     `key:"linter"`
-	Releaser  ReleaserConfig   `key:"releaser"`
-	Tests     TestsConfig      `key:"tests"`
+	Changelog    changelog.Config   `key:"changelog"`
+	Git          GitConfig          `key:"git"`
+	Linter       LinterConfig       `key:"linter"`
+	Releaser     ReleaserConfig     `key:"releaser"`
+	Tests        TestsConfig        `key:"tests"`
+	Dependencies DependenciesConfig `key:"deps"`
 }
 
 func (c *Config) Blueprint() (*settings.Blueprint, error) {
@@ -151,5 +152,21 @@ type ReleaserConfig struct {
 }
 
 func (c *ReleaserConfig) Blueprint() (*settings.Blueprint, error) {
+	return settings.New(c)
+}
+
+type DependenciesConfig struct {
+	Latest DependenciesGoConfig `key:"go"`
+}
+
+func (c *DependenciesConfig) Blueprint() (*settings.Blueprint, error) {
+	return settings.New(c)
+}
+
+type DependenciesGoConfig struct {
+	Latest settings.StringSlice `key:"latest"`
+}
+
+func (c *DependenciesGoConfig) Blueprint() (*settings.Blueprint, error) {
 	return settings.New(c)
 }

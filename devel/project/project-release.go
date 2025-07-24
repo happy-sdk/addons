@@ -169,6 +169,33 @@ func (prj *Project) releaseGomodules(sess *session.Context, r *tr.Runner, dep tr
 	}
 
 	remoteName := prj.Config().Get("git.remote.name").String()
+
+	var goDepsLatest = make(map[string]version.Version)
+
+	r.AddD(dep, "check dep updates",
+		func(ex *tr.Executor) (res tr.Result) {
+			goDepsToCheckLatest := prj.Config().Get("deps.go.latest").Value().Fields()
+
+			if len(goDepsToCheckLatest) == 0 {
+				return tr.Skip("no deps to check updates for")
+			}
+
+			for _, dep := range goDepsToCheckLatest {
+
+				ver, err := gomodule.GetLatestVersion(dep, prj.Dir().Path)
+				if err != nil {
+					return tr.Failure(fmt.Sprintf("failed to get latest version for %s: %s", dep, err.Error()))
+				}
+				v, err := version.Parse(ver)
+				if err != nil {
+					return tr.Failure("failed to parse dep version").WithDesc(dep)
+				}
+				goDepsLatest[dep] = v
+			}
+
+			return tr.Success("deps checked")
+		})
+
 	for _, pkg := range gomodules {
 		name := path.Base(pkg.Dir)
 		r.AddD(dep, name,
@@ -180,6 +207,17 @@ func (prj *Project) releaseGomodules(sess *session.Context, r *tr.Runner, dep tr
 					!skipRemoteChecks); err != nil {
 					failed = true
 					return tr.Failure(fmt.Sprintf("failed to get release info: %s", err.Error()))
+				}
+
+				for goDepImport, goDepLatest := range goDepsLatest {
+					for _, r := range pkg.Modfile.Require {
+						if r.Mod.Path == goDepImport {
+							if err := pkg.SetDep(goDepImport, goDepLatest); err != nil {
+								return tr.Failure(fmt.Sprintf("failed to set dep %s: %s", goDepImport, err.Error()))
+							}
+							break
+						}
+					}
 				}
 
 				if !pkg.NeedsRelease {
