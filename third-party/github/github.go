@@ -5,8 +5,8 @@
 package github
 
 import (
-	"github.com/happy-sdk/happy"
-	"github.com/happy-sdk/happy/sdk/settings"
+	"github.com/happy-sdk/happy/pkg/settings"
+	"github.com/happy-sdk/happy/sdk/addon"
 )
 
 type Settings struct {
@@ -16,18 +16,13 @@ type Settings struct {
 }
 
 func (s Settings) Blueprint() (*settings.Blueprint, error) {
-	b, err := settings.New(s)
-	if err != nil {
-		return nil, err
-	}
-
-	return b, nil
+	return settings.New(s)
 }
 
 type Github struct{}
 
-func Addon(s Settings) *happy.Addon {
-	addon := happy.NewAddon("github", s)
+func Addon(s Settings) *addon.Addon {
+	addon := addon.New("github").WithSettings(s)
 
 	return addon
 }

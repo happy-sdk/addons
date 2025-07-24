@@ -62,7 +62,7 @@ func (prj *Project) Release(sess *session.Context, allowDirty, skipRemoteChecks 
 		releaser.AddTask(task)
 	}
 
-	releaser.Add("commmit", func(ex *tr.Executor) (res tr.Result) {
+	releaser.AddD(previousTaskID, "commmit", func(ex *tr.Executor) (res tr.Result) {
 		if gitutils.Dirty(sess, prj.Dir().Path, ".") {
 			if err := gitutils.Commit(sess, prj.Dir().Path, []string{"-A"}, fmt.Sprintf("chore(%s): :label: prepare release", path.Base(prj.Dir().Path))); err != nil {
 				return tr.Failure(err.Error())
@@ -161,15 +161,11 @@ func (prj *Project) releaseGomodules(sess *session.Context, r *tr.Runner, dep tr
 		gomodules []*gomodule.Package
 		err       error
 		failed    bool
-		localDeps []string
 	)
 
 	gomodules, err = prj.GoModules(sess)
 	if err != nil {
 		return dep, err
-	}
-	for _, pkg := range gomodules {
-		localDeps = append(localDeps, pkg.Import)
 	}
 
 	remoteName := prj.Config().Get("git.remote.name").String()
@@ -261,19 +257,22 @@ func (prj *Project) releaseGomodules(sess *session.Context, r *tr.Runner, dep tr
 			}
 		}
 		var msg string
-		if count == 0 {
+		switch count {
+		case 0:
 			return tr.Success("no modules to release")
-		} else if count == 1 {
+		case 1:
 			msg = fmt.Sprintf("%d module", count)
-		} else {
+		default:
 			msg = fmt.Sprintf("%d modules", count)
 		}
 		return tr.Success(msg)
 	})
 
 	t5 := r.AddD(t4, "confirm releasable modules", func(ex *tr.Executor) (res tr.Result) {
-		ex.Program().ReleaseTerminal()
-		defer ex.Program().RestoreTerminal()
+		_ = ex.Program().ReleaseTerminal()
+		defer func() {
+			_ = ex.Program().RestoreTerminal()
+		}()
 
 		stdout := ex.Stdout()
 
@@ -350,7 +349,7 @@ func (prj *Project) releaseChangelog(sess *session.Context, r *tr.Runner, dep tr
 		cldata.WriteString("## Changelog\n")
 
 		if cl.Root != nil {
-			cldata.WriteString(fmt.Sprintf("`%s@%s`\n\n", cl.Root.pkg.Import, cl.Root.pkg.NextReleaseTag))
+			fmt.Fprintf(cldata, "`%s@%s`\n\n", cl.Root.pkg.Import, cl.Root.pkg.NextReleaseTag)
 			var breakingsection string
 			for _, breaking := range cl.Root.Breaking {
 				for _, scl := range cl.Subpkgs {
@@ -391,7 +390,7 @@ func (prj *Project) releaseChangelog(sess *session.Context, r *tr.Runner, dep tr
 		}
 
 		for _, scl := range cl.Subpkgs {
-			cldata.WriteString(fmt.Sprintf("\n### %s\n\n`%s@%s`\n", scl.pkg.NextReleaseTag, scl.pkg.Import, path.Base(scl.pkg.NextReleaseTag)))
+			fmt.Fprintf(cldata, "\n### %s\n\n`%s@%s`\n", scl.pkg.NextReleaseTag, scl.pkg.Import, path.Base(scl.pkg.NextReleaseTag))
 
 			for i, breaking := range scl.Breaking {
 				if i == 0 {
