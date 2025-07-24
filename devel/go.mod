@@ -10,9 +10,9 @@ require (
 	github.com/goccy/go-yaml v1.18.0
 	github.com/happy-sdk/happy/pkg/devel/testutils v1.1.1
 	github.com/happy-sdk/happy/pkg/options v0.6.1
-	github.com/happy-sdk/happy/pkg/settings v0.6.2
+	github.com/happy-sdk/happy/pkg/settings v0.6.3
 	github.com/happy-sdk/happy/pkg/strings/bexp v1.5.2
-	github.com/happy-sdk/happy/pkg/vars v0.18.1
+	github.com/happy-sdk/happy/pkg/vars v0.18.2
 	github.com/happy-sdk/happy/pkg/version v0.4.1
 	golang.org/x/mod v0.25.0
 )
@@ -28,11 +28,11 @@ require (
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.6.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/happy-sdk/happy v0.100.2
+	github.com/happy-sdk/happy v0.100.5
 	github.com/happy-sdk/happy/pkg/devel/goutils v0.1.1
 	github.com/happy-sdk/happy/pkg/fsutils v0.2.0
 	github.com/happy-sdk/happy/pkg/i18n v0.2.0 // indirect
-	github.com/happy-sdk/happy/pkg/logging v0.2.3 // indirect
+	github.com/happy-sdk/happy/pkg/logging v0.2.4 // indirect
 	github.com/happy-sdk/happy/pkg/networking v0.1.0 // indirect
 	github.com/happy-sdk/happy/pkg/scheduling/cron v0.5.2 // indirect
 	github.com/happy-sdk/happy/pkg/strings/slug v0.2.1 // indirect
