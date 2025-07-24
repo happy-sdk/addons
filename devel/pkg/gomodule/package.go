@@ -470,6 +470,14 @@ func (p *Package) getChangelog(sess *session.Context, rootPath string) error {
 		localpath = "."
 	}
 	lastTagQuery = append(lastTagQuery, []string{"--pretty=format::COMMIT_START:%nSHORT:%h%nLONG:%H%nAUTHOR:%an%nMESSAGE:%B:COMMIT_END:", "--", localpath}...)
+
+	// Add exclusions by walking the directory tree
+	// filepath.Join(rootPath, localpath) and exclude all dirs which have go.mod
+	exclusions, err := buildExclusions(rootPath, localpath)
+	if err == nil {
+		lastTagQuery = append(lastTagQuery, exclusions...)
+	}
+
 	logcmd := exec.Command("git", lastTagQuery...)
 	logcmd.Dir = rootPath
 	logout, err := cli.Exec(sess, logcmd)
@@ -479,6 +487,12 @@ func (p *Package) getChangelog(sess *session.Context, rootPath string) error {
 	changelog, err := changelog.ParseGitLog(sess, logout)
 	if err != nil {
 		return err
+	}
+	if changelog.HasMajorUpdate() || changelog.HasMinorUpdate() || changelog.HasPatchUpdate() {
+
+		fmt.Println(p.Dir)
+		fmt.Println(strings.Join(lastTagQuery, " "))
+		fmt.Println(logout)
 	}
 	p.Changelog = changelog
 	if p.Changelog.Empty() {
@@ -508,6 +522,135 @@ func (p *Package) getChangelog(sess *session.Context, rootPath string) error {
 		p.NeedsRelease = true
 	}
 	return nil
+}
+
+// buildExclusions finds directories with go.mod files or tags and returns exclusion patterns
+func buildExclusions(rootPath, localpath string) ([]string, error) {
+	var exclusions []string
+
+	// Full path to search
+	searchPath := filepath.Join(rootPath, localpath)
+
+	// Get all tagged paths for exclusion
+	taggedPaths, _ := getTaggedPaths(rootPath, localpath)
+
+	// Walk the directory tree starting from searchPath
+	err := filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		if !info.IsDir() {
+			return nil
+		}
+
+		// Convert to relative path from rootPath
+		relPath, err := filepath.Rel(rootPath, path)
+		if err != nil {
+			return filepath.SkipDir
+		}
+
+		if relPath == localpath || relPath == "." {
+			return filepath.SkipDir
+		}
+
+		// Skip if this directory is not nested under our localpath
+		if !strings.HasPrefix(relPath, localpath+string(filepath.Separator)) {
+			return filepath.SkipDir
+		}
+
+		shouldExclude := false
+
+		// Check if this directory has a go.mod file
+		goModPath := filepath.Join(path, "go.mod")
+		if _, err := os.Stat(goModPath); err == nil {
+			shouldExclude = true
+		}
+
+		// Check if this directory has tags
+		if !shouldExclude {
+			shouldExclude = slices.Contains(taggedPaths, relPath)
+		}
+
+		if shouldExclude {
+			// Add exclusion pattern for this directory
+			exclusions = append(exclusions, ":!"+relPath+"/*")
+			// Skip walking into this directory since we're excluding it
+			return filepath.SkipDir
+		}
+
+		return nil
+	})
+
+	return exclusions, err
+}
+
+// getTaggedPaths returns all directory paths that have at least one tag
+func getTaggedPaths(rootPath, localpath string) ([]string, error) {
+	var taggedPaths []string
+
+	// Get all tags from git
+	cmd := exec.Command("git", "tag", "-l")
+	cmd.Dir = rootPath
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse tags and extract paths
+	pathMap := make(map[string]bool)
+	tags := strings.Split(strings.TrimSpace(string(output)), "\n")
+
+	for _, tag := range tags {
+		if tag == "" {
+			continue
+		}
+
+		// Extract path from tag (assuming format like "path/to/module/v1.2.3")
+		// Remove version suffix to get the path
+		tagPath := extractPathFromTag(tag)
+		if tagPath == "" {
+			continue
+		}
+
+		// Only include paths that are nested under our localpath
+		if strings.HasPrefix(tagPath, localpath+"/") && tagPath != localpath {
+			pathMap[tagPath] = true
+		}
+	}
+
+	// Convert map to slice
+	for path := range pathMap {
+		taggedPaths = append(taggedPaths, path)
+	}
+
+	return taggedPaths, nil
+}
+
+// extractPathFromTag extracts the directory path from a tag
+// Assumes tags follow pattern like "path/to/module/v1.2.3" or "path/to/module/v1.2.3-beta.1"
+func extractPathFromTag(tag string) string {
+	// Find the last segment that looks like a version
+	parts := strings.Split(tag, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+
+	// Look for version pattern from the end
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := parts[i]
+		// Check if this part looks like a version (starts with v and has dots)
+		if strings.HasPrefix(part, "v") && strings.Contains(part, ".") {
+			// Everything before this part is the path
+			if i == 0 {
+				return "" // No path, just version
+			}
+			return strings.Join(parts[:i], "/")
+		}
+	}
+
+	// If no version pattern found, assume the whole thing is a path
+	return tag
 }
 
 func bumpMajor(prefix, tag string) (string, error) {
