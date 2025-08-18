@@ -18,11 +18,12 @@ import (
 // Daemon client control service
 func (api *API) controlService() *services.Service {
 	svc := services.New(service.Config{
-		Name:         "daemon-ctl",
-		Description:  "Daemon client control service",
-		RetryOnError: true,
-		MaxRetries:   3,
-		RetryBackoff: settings.Duration(5 * time.Second),
+		Name:          "daemon-ctl",
+		Description:   "Daemon client control service",
+		RetryOnError:  false,
+		MaxRetries:    0,
+		RetryBackoff:  settings.Duration(5 * time.Second),
+		LoaderTimeout: settings.Duration(time.Second * 5),
 	})
 
 	svc.OnStart(func(sess *session.Context) (err error) {

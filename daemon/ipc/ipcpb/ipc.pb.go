@@ -454,6 +454,7 @@ const (
 	HealthStatusSnapshot_HEALTHY   HealthStatusSnapshot_HealthState = 1
 	HealthStatusSnapshot_DEGRADED  HealthStatusSnapshot_HealthState = 2
 	HealthStatusSnapshot_UNHEALTHY HealthStatusSnapshot_HealthState = 3
+	HealthStatusSnapshot_STOPPED   HealthStatusSnapshot_HealthState = 4
 )
 
 // Enum value maps for HealthStatusSnapshot_HealthState.
@@ -463,12 +464,14 @@ var (
 		1: "HEALTHY",
 		2: "DEGRADED",
 		3: "UNHEALTHY",
+		4: "STOPPED",
 	}
 	HealthStatusSnapshot_HealthState_value = map[string]int32{
 		"UNKNOWN":   0,
 		"HEALTHY":   1,
 		"DEGRADED":  2,
 		"UNHEALTHY": 3,
+		"STOPPED":   4,
 	}
 )
 
@@ -2748,7 +2751,7 @@ const file_ipc_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\n" +
 	"\n" +
 	"\b_payloadB\x0e\n" +
-	"\f_custom_data\"\xcc\x05\n" +
+	"\f_custom_data\"\xd9\x05\n" +
 	"\x14HealthStatusSnapshot\x12>\n" +
 	"\x05state\x18\x01 \x01(\x0e2(.daemon.HealthStatusSnapshot.HealthStateR\x05state\x128\n" +
 	"\ttimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12\x1d\n" +
@@ -2767,12 +2770,13 @@ const file_ipc_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\n" +
 	"\n" +
-	"\b_message\"D\n" +
+	"\b_message\"Q\n" +
 	"\vHealthState\x12\v\n" +
 	"\aUNKNOWN\x10\x00\x12\v\n" +
 	"\aHEALTHY\x10\x01\x12\f\n" +
 	"\bDEGRADED\x10\x02\x12\r\n" +
-	"\tUNHEALTHY\x10\x03B\n" +
+	"\tUNHEALTHY\x10\x03\x12\v\n" +
+	"\aSTOPPED\x10\x04B\n" +
 	"\n" +
 	"\b_message\"\xfe\x04\n" +
 	"\aMetrics\x129\n" +

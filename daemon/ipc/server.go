@@ -292,7 +292,7 @@ func (s *Server) handleCommand(peer *Peer, req *Request, cmd *ipcpb.CommandReque
 		res := NewResponse(&ipcpb.Response{
 			Type: ipcpb.Response_COMMAND,
 			Body: &ipcpb.Response_Health{
-				Health: snapshot.IpcResponseMessage(),
+				Health: healthcheck.SnapshotToIPCMessage(snapshot),
 			},
 		}, req)
 		frame, err := res.frame(peer.key)

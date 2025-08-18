@@ -5,11 +5,14 @@
 package daemon
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"syscall"
 	"time"
 
+	"github.com/happy-sdk/addons/daemon/healthcheck"
+	"github.com/happy-sdk/addons/daemon/ipc/ipcpb"
 	"github.com/happy-sdk/happy"
 	"github.com/happy-sdk/happy/pkg/settings"
 	"github.com/happy-sdk/happy/sdk/action"
@@ -20,6 +23,7 @@ import (
 )
 
 var AllCommands = settings.StringSlice{
+	"health",
 	"ping",
 	"reload",
 	"restart",
@@ -39,6 +43,7 @@ func (s *Setup) cmds() []*command.Command {
 		cat = "DAEMON"
 	}
 	var cfuncs = map[string]func(cat string) *command.Command{
+		"health":  CommandHealth,
 		"ping":    CommandPing,
 		"reload":  CommandReload,
 		"restart": CommandRestart,
@@ -67,6 +72,69 @@ func Command(cmds []*command.Command) *command.Command {
 		SharedBeforeAction: true,
 	})
 	cmd.WithSubCommands(cmds...)
+	return cmd
+}
+
+func CommandHealth(category string) *command.Command {
+	cmd := command.New("health", command.Config{
+		Description: "Call the health endpoint",
+		Category:    settings.String(category),
+	})
+
+	cmd.WithFlags(
+		cli.NewOptionFlag("output", []string{"table"}, []string{"table", "json"}, "Set output format"),
+	)
+	cmd.Do(func(sess *session.Context, args action.Args) error {
+		var (
+			health *healthcheck.Snapshot
+			err    error
+		)
+
+		loader := services.NewLoader(sess, "daemon-ctl")
+		<-loader.Load()
+		if err = loader.Err(); err != nil {
+			hs := healthcheck.NewStatus()
+			hs.SetState(ipcpb.HealthStatusSnapshot_STOPPED)
+			health, err = hs.Snapshot(sess)
+			if err != nil {
+				return err
+			}
+			goto PRINT
+		}
+
+		{
+			api, err := happy.API[*API](sess)
+			if err != nil {
+				return err
+			}
+
+			client, err := api.Client()
+			if err != nil {
+				return err
+			}
+
+			health, err = client.HealthCheck() // Now safe to assign
+			if err != nil {
+				return err
+			}
+		}
+
+	PRINT:
+		switch args.Flag("output").String() {
+		case "json":
+			b, err := json.Marshal(health)
+			if err != nil {
+				return err
+			}
+			fmt.Println(string(b))
+		case "table":
+			fmt.Println(health.TableString())
+		default:
+			return ErrInvalidOutputFormat
+		}
+
+		return nil
+	})
 	return cmd
 }
 

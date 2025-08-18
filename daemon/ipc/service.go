@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/happy-sdk/addons/daemon/healthcheck"
+	"github.com/happy-sdk/addons/daemon/ipc/ipcpb"
 	"github.com/happy-sdk/happy/pkg/logging"
 	"github.com/happy-sdk/happy/pkg/settings"
 	"github.com/happy-sdk/happy/sdk/services"
@@ -63,12 +64,14 @@ func (ipcsvc *Service) AsService(status *healthcheck.Status) *services.Service {
 
 		ipcsvc.running.Store(true)
 		ipcsvc.ok(sess.Log(), "service started")
-
+		status.SetState(ipcpb.HealthStatusSnapshot_HEALTHY)
 		return nil
 	})
 
 	svc.OnStop(func(sess *session.Context, err error) error {
 		ipcsvc.debug(sess.Log(), "stopping...")
+
+		status.SetState(ipcpb.HealthStatusSnapshot_DEGRADED)
 
 		if err != nil {
 			ipcsvc.err(sess.Log(), err.Error())
@@ -116,7 +119,7 @@ func (ipcsvc *Service) AsService(status *healthcheck.Status) *services.Service {
 		}
 
 		ipcsvc.ok(sess.Log(), "service stopped")
-
+		status.SetState(ipcpb.HealthStatusSnapshot_STOPPED)
 		return nil
 	})
 

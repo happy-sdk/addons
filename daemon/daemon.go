@@ -15,10 +15,11 @@ import (
 )
 
 var (
-	Error             = errors.New("daemon")
-	ErrAlreadyRunning = fmt.Errorf("%w already running", Error)
-	ErrNotRunning     = fmt.Errorf("%w not running", Error)
-	ErrSignal         = fmt.Errorf("%w signal", Error)
+	Error                  = errors.New("daemon")
+	ErrAlreadyRunning      = fmt.Errorf("%w already running", Error)
+	ErrNotRunning          = fmt.Errorf("%w not running", Error)
+	ErrSignal              = fmt.Errorf("%w signal", Error)
+	ErrInvalidOutputFormat = fmt.Errorf("%w invalid output format", Error)
 )
 
 var (

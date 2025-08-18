@@ -260,6 +260,7 @@ message HealthStatusSnapshot {
     HEALTHY = 1;
     DEGRADED = 2;
     UNHEALTHY = 3;
+    STOPPED = 4;
   }
 
   map<string, ComponentHealth> components = 4;

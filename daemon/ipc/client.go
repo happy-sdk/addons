@@ -73,7 +73,7 @@ func (c *Client) Connect() (err error) {
 		return nil
 	}
 	reconnect := time.NewTicker(time.Second)
-	reconnectTimer := time.NewTimer(time.Second * 20)
+	reconnectTimer := time.NewTimer(time.Second * 5)
 	defer reconnect.Stop()
 	defer reconnectTimer.Stop()
 

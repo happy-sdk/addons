@@ -33,7 +33,7 @@ type Setup struct {
 func setup(s *Settings) *Setup {
 	setup := &Setup{
 		settings: s,
-		status:   &healthcheck.Status{},
+		status:   healthcheck.NewStatus(),
 	}
 	setup.pid.Store(int64(os.Getpid()))
 	return setup
