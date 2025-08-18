@@ -5,7 +5,7 @@ go 1.24.0
 toolchain go1.24.4
 
 require (
-	github.com/happy-sdk/happy v0.101.0
+	github.com/happy-sdk/happy v0.102.0
 	github.com/happy-sdk/happy/pkg/settings v0.7.0
 )
 
