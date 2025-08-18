@@ -1,0 +1,310 @@
+syntax = "proto3";
+
+package daemon;
+option go_package = "github.com/happy-sdk/addons/daemon/ipc/ipcpb";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+
+// ==========================
+// Types
+// ==========================
+message UUID {
+  string value = 1;
+}
+
+
+message Frame {
+  uint32 metadata_length = 1; // Plaintext: length of encrypted header
+  Metadata metadata = 2; // Encrypted: frame metadata
+  optional bytes payload = 3; // Encrypted: actual Request/Response
+
+  message Metadata {
+    Kind kind = 1; // Frame type
+    uint32 length = 2; // Length of encrypted payload
+    google.protobuf.Timestamp timestamp = 3; // Frame timestamp
+    optional google.protobuf.Duration req_dur = 4; // Response processing time
+    optional UUID correlation_id = 5; // Multipurpose correlation ID
+    optional uint64 sequence = 6;
+  }
+
+  enum Kind {
+    INVALID = 0;
+    PING = 1;      // Control frame - keepalive request
+    PONG = 2;      // Control frame - keepalive response
+    ACK = 3;       // Control frame - acknowledgment (minimal payload)
+    ERROR = 4;     // Control frame - errors (minimal payload)
+    HANDSHAKE = 5; // Key exchange/session establishment
+    REQUEST = 6;   // Contains Request protobuf
+    RESPONSE = 7;  // Contains Response protobuf (full response)
+    STREAM = 8;    // Contains StreamMessage protobuf
+  }
+}
+
+
+// ==========================
+// Request
+// ==========================
+message Request {
+  UUID session_id = 1; // Required for all requests after handshake
+  map<string, string> headers = 2;
+
+  oneof body {
+    HandshakeRequest handshake = 10;
+    FireAndForgetRequest fire_and_forget = 11;
+    CommandRequest command = 12;
+    SynchronousRequest synchronous = 13;
+    SubscriptionRequest subscription = 14;
+  }
+}
+
+// Initial handshake to establish session
+message HandshakeRequest {
+  uint32 protocol_version = 1; // Protocol version compatibility
+  map<string, string> metadata = 2; // Custom metadata for Handshake middleware(s)
+}
+
+
+// CommandRequest
+message CommandRequest {
+  CommandType type = 1;
+  map<string, string> parameters = 2;
+  optional bytes payload = 3;
+
+  enum CommandType {
+    INVALID = 0;
+    HEALTHCHECK = 1;
+    // STATUS = 1;
+    // STOP = 2;
+    // RELOAD = 3;
+    // RESTART = 4;
+    // VERSION = 6;
+    // METRICS = 7;
+    // LOGS = 8;
+    // CONFIG = 9; // Get/set configuration
+    CUSTOM = 99; // For custom daemon commands
+  }
+}
+
+// Fire-and-forget requests (no response expected except ACK/ERROR)
+message FireAndForgetRequest {
+  string action = 1;
+  optional bytes payload = 3;
+  optional google.protobuf.Any custom_data = 4;
+}
+
+// Synchronous request-response pattern
+message SynchronousRequest {
+  string method = 1; // Like HTTP method or RPC method name
+  string path = 2; // Resource path or endpoint
+  optional bytes payload = 3;
+  optional google.protobuf.Any custom_data = 4;
+  optional uint32 timeout_seconds = 6; // Request timeout
+}
+
+// Subscription/streaming requests
+message SubscriptionRequest {
+  SubscriptionAction action = 1;
+  string subscription_id = 2; // Client-generated subscription ID
+  SubscriptionTarget target = 3;
+  optional SubscriptionFilter filter = 4;
+  map<string, string> options = 5;
+
+  enum SubscriptionAction {
+    SUBSCRIBE = 0;
+    UNSUBSCRIBE = 1;
+    PAUSE = 2;
+    RESUME = 3;
+  }
+
+  message SubscriptionTarget {
+    TargetType type = 1;
+    optional string channel = 2; // For channel-based subscriptions
+    optional string pattern = 3; // For pattern matching
+    repeated string event_types = 4; // Specific event types
+
+    enum TargetType {
+      ALL_EVENTS = 0;
+      SPECIFIC_EVENTS = 1;
+      CHANNEL = 2;
+      PATTERN = 3;
+      CUSTOM = 99;
+    }
+  }
+
+  message SubscriptionFilter {
+    map<string, string> attributes = 1; // Key-value filters
+    optional string expression = 2; // Filter expression (e.g., SQL-like)
+    repeated string tags = 3;
+  }
+}
+
+// Main response message
+message Response {
+  optional UUID request_id = 1;
+  ResponseType type = 2;
+  map<string, string> headers = 3;
+  Status status = 4;
+  google.protobuf.Timestamp timestamp = 5;
+
+  oneof body {
+    HandshakeResponse handshake = 20;
+    CommandResponse command = 21;
+    SynchronousResponse synchronous = 22;
+    SubscriptionResponse subscription = 23;
+    StreamMessage stream = 24;
+    HealthStatusSnapshot health = 25;
+  }
+
+  enum ResponseType {
+    INVALID = 0;
+    HANDSHAKE = 1;
+    COMMAND = 2;
+    SYNCHRONOUS = 3;
+    SUBSCRIPTION = 4;
+    STREAM = 5; // For streaming data
+    ERROR = 6;
+  }
+
+  message Status {
+    StatusType type = 1;
+    uint32 code = 2; // HTTP-like status codes (200, 400, 500, etc.)
+    optional string message = 3;
+    optional Details details = 4; // Rich information when applicable
+
+    enum StatusType {
+      SUCCESS = 0;
+      ACCEPTED = 1;
+      PENDING = 2;
+      ERROR = 3;
+      REJECTED = 4;
+      TIMEOUT = 5;
+      PARTIAL = 6; // Partial success
+      RETRY = 7; // Temporary failure, retry recommended
+      UNAUTHORIZED = 8;
+      FORBIDDEN = 9;
+      NOT_FOUND = 10;
+      CONFLICT = 11;
+      RATE_LIMITED = 12;
+    }
+  }
+
+  // Error details for better error handling
+  message Details {
+    string description = 1;
+    map<string, string> context = 2; // Additional status context
+    repeated string suggestions = 3; // Possible solutions
+  }
+}
+
+
+// Handshake response with session details
+message HandshakeResponse {
+  UUID session_id = 1; // Assigned session identifier
+  map<string, string> metadata = 2; // Response metadata
+  uint32 protocol_version = 3;
+  google.protobuf.Duration heartbeat_interval = 4; // Duration between heartbeats before client gets disconnected.
+}
+
+// Command response
+message CommandResponse {
+  CommandRequest.CommandType command_type = 1;
+  map<string, string> metadata = 2;
+  optional bytes payload = 3;
+  optional google.protobuf.Any custom_data = 4;
+}
+
+// Synchronous response
+message SynchronousResponse {
+  map<string, string> metadata = 1;
+  optional bytes payload = 2;
+  optional google.protobuf.Any custom_data = 3;
+}
+
+// Subscription response (for subscribe/unsubscribe operations)
+message SubscriptionResponse {
+  UUID subscription_id = 1;
+  SubscriptionRequest.SubscriptionAction action = 2;
+  SubscriptionState state = 3;
+  optional string reason = 4;
+
+  enum SubscriptionState {
+    ACTIVE = 0;
+    INACTIVE = 1;
+    PAUSED = 2;
+    FAILED = 3;
+  }
+}
+
+// Streaming messages (for subscription data)
+message StreamMessage {
+  UUID subscription_id = 1;
+  uint64 sequence_number = 2; // For ordering
+  google.protobuf.Timestamp timestamp = 3;
+  string message_type = 4;
+  map<string, string> attributes = 5;
+  optional bytes payload = 6;
+  optional google.protobuf.Any custom_data = 7;
+}
+
+
+// Health check specific structures
+message HealthStatusSnapshot {
+  HealthState state = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  optional string message = 3;
+
+  enum HealthState {
+    UNKNOWN = 0;
+    HEALTHY = 1;
+    DEGRADED = 2;
+    UNHEALTHY = 3;
+  }
+
+  map<string, ComponentHealth> components = 4;
+
+  message ComponentHealth {
+    HealthState state = 1;
+    optional string message = 2;
+    map<string, string> metrics = 3;
+  }
+}
+
+// Metrics structure for monitoring
+message Metrics {
+  map<string, double> counters = 1;
+  map<string, double> gauges = 2;
+  map<string, Histogram> histograms = 3;
+  google.protobuf.Timestamp collected_at = 4;
+
+  message Histogram {
+    repeated Bucket buckets = 1;
+    uint64 count = 2;
+    double sum = 3;
+
+    message Bucket {
+      double upper_bound = 1;
+      uint64 count = 2;
+    }
+  }
+}
+
+// Configuration structure
+message Configuration {
+  string version = 1;
+  map<string, ConfigValue> values = 2;
+  google.protobuf.Timestamp updated_at = 3;
+
+  message ConfigValue {
+    oneof value {
+      string string_value = 1;
+      int64 int_value = 2;
+      double double_value = 3;
+      bool bool_value = 4;
+      bytes bytes_value = 5;
+    }
+    optional string description = 6;
+    bool read_only = 7;
+  }
+}
