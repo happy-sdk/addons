@@ -5,11 +5,16 @@
 package cmds
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/happy-sdk/happy/pkg/settings"
 	"github.com/happy-sdk/happy/sdk/cli/command"
+	"github.com/happy-sdk/happy/sdk/session"
+	"golang.org/x/sys/unix"
 )
 
 var All = settings.StringSlice{
@@ -60,7 +65,7 @@ func Get(name, category string) (*command.Command, error) {
 	case "restart":
 		// cmd = Restart(category)
 	case "start":
-		// cmd = Start(category)
+		cmd = Start(category)
 	case "status":
 		// cmd = Status(category)
 	case "stop":
@@ -68,4 +73,34 @@ func Get(name, category string) (*command.Command, error) {
 	}
 
 	return cmd, nil
+}
+
+// monitorProcess checks if the process with the given PID has exited and calls onExit when it does.
+// It polls using unix.Kill with signal 0 and respects the context for cancellation.
+func monitorProcess(ctx context.Context, pid int, onExit func()) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			// Check if process exists by sending signal 0
+			err := unix.Kill(pid, 0)
+			if err != nil {
+				if errors.Is(err, unix.ESRCH) {
+					onExit()
+					return nil
+				}
+				return err
+			}
+		}
+	}
+}
+
+func isRunning(sess *session.Context) (running bool, pid int) {
+	pid = sess.Get("daemon.process.pid").Int()
+	running = sess.Get("daemon.process.running").Bool()
+	return
 }

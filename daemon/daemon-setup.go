@@ -5,17 +5,28 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 
-	"github.com/happy-sdk/addons/daemon/healthcheck"
+	"github.com/happy-sdk/addons/daemon/cmds"
+	"github.com/happy-sdk/addons/daemon/pkg/telemetry"
+	"github.com/happy-sdk/addons/daemon/services/ctl"
+	"github.com/happy-sdk/addons/daemon/services/dbus"
+	"github.com/happy-sdk/addons/daemon/services/ipc"
+	"github.com/happy-sdk/addons/daemon/services/logd"
+	"github.com/happy-sdk/addons/daemon/services/process"
 	"github.com/happy-sdk/happy/pkg/logging"
+
+	"github.com/happy-sdk/happy/pkg/options"
 	"github.com/happy-sdk/happy/sdk/action"
 	"github.com/happy-sdk/happy/sdk/addon"
-	"github.com/happy-sdk/happy/sdk/services"
+	"github.com/happy-sdk/happy/sdk/cli/command"
+	"github.com/happy-sdk/happy/sdk/session"
 )
 
 type Setup struct {
@@ -23,58 +34,89 @@ type Setup struct {
 	pid      atomic.Int64
 	sealed   bool
 	settings *Settings
+	errs     []error
 
-	cronSetup   func(schedule services.CronScheduler)
-	status      *healthcheck.Status
-	startAction action.WithArgs
-	stopAction  action.WithPrevErr
+	wrapperCommand *command.Command
+	customCommands map[string]*command.Command
+
+	daemon *process.Manager
+	state  *telemetry.DaemonState
 }
 
-func setup(s *Settings) *Setup {
+func (s *Setup) dispose() {
+	s.settings = nil
+	s.errs = nil
+	s.wrapperCommand = nil
+	s.customCommands = nil
+	s.daemon = nil
+	s.state = nil
+}
+
+// New returns a new daemon Setup instance, to configure the daemon.
+func New(s Settings) *Setup {
 	setup := &Setup{
-		settings: s,
-		status:   healthcheck.NewStatus(),
+		settings:       &s,
+		customCommands: make(map[string]*command.Command),
 	}
+	setup.settings.Defaults()
 	setup.pid.Store(int64(os.Getpid()))
+	setup.state = telemetry.NewDaemonState()
+	setup.daemon = process.New(setup.state)
 	return setup
+}
+
+// WithWrapperCommand sets the command to be used as a wrapper for the daemon commands.
+// Daemon Command will be added as subcommands.
+// When used this will set the CTL.EnableWrapperCommand true.
+// If CTL.EnableWrapperCommand is true and this method is not used,
+// the daemon will create default wrapper "daemon" where subcommands will be added.
+func (s *Setup) WithWrapperCommand(cmd *command.Command) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.isSealed("WithWrapperCommand") {
+		return
+	}
+	s.wrapperCommand = cmd
+	s.settings.CTL.EnableWrapperCommand = true
+}
+
+// WithCommand adds a command to the daemon.
+// Command will be available depending on CTL.EnableWrapperCommand. setting.
+// You need to add command name to CTL.EnabledCommands settings slice
+// otherwise the command will not be available.
+// Custom command will override existing builtin command with the same name.
+func (s *Setup) WithCommand(cmd *command.Command) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.isSealed("WithCommand") {
+		return
+	}
+	cmdName := cmd.Name()
+	if _, exists := s.customCommands[cmdName]; exists {
+		s.err(fmt.Sprintf("command %s already exists", cmdName))
+		return
+	}
+	s.customCommands[cmdName] = cmd
 }
 
 // OnStart sets the start action for the daemon.
 func (s *Setup) OnStart(action action.WithArgs) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.sealed {
-		s.initerr("OnStart", "setting start action")
+	if s.isSealed("OnStart") {
 		return
 	}
-	s.startAction = action
+	// s.startAction = action
 }
 
 // OnStop sets the stop action for the daemon.
 func (s *Setup) OnStop(action action.WithPrevErr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.sealed {
-		s.initerr("OnStop", "setting stop action")
+	if s.isSealed("OnStop") {
 		return
 	}
-	s.stopAction = action
-}
-
-func (s *Setup) HealthCheck(f healthcheck.HandlerFunc) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.status = healthcheck.WithHandlerFunc(s.status, f)
-}
-
-func (s *Setup) Cron(setupFunc func(schedule services.CronScheduler)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sealed {
-		s.initerr("OnStop", "setting stop action")
-		return
-	}
-	s.cronSetup = setupFunc
+	// s.stopAction = action
 }
 
 // Addon builds and returns a Happy SDK addon configured with the current Setup.
@@ -90,34 +132,196 @@ func (s *Setup) Cron(setupFunc func(schedule services.CronScheduler)) {
 func (s *Setup) Addon() *addon.Addon {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.sealed {
-		s.initerr("Addon", "creating daemon addon")
+
+	if s.isSealed("Addon") {
 		return nil
 	}
-	return s.addon()
+	s.sealed = true
+
+	a := addon.New("daemon").
+		WithSettings(s.settings)
+
+	opts := []*options.OptionSpec{
+		options.NewOption("config.dir", ""),
+		options.NewOption("runtime.dir", ""),
+	}
+	opts = append(opts, logd.Options()...)
+	opts = append(opts, ipc.Options()...)
+	opts = append(opts, process.Options()...)
+
+	a.WithOptions(opts...)
+
+	a.ProvideCommands(s.cmds()...)
+
+	a.OnRegister(s.addonOnRegister)
+
+	a.ProvideServices(
+		ctl.New().Service(),
+		logd.New(s.state).Service(),
+		s.daemon.Service(),
+		ipc.New().Service(),
+		dbus.New().Service(),
+	)
+
+	return a
 }
 
-// func (s *Setup) debug(logger logging.Logger, msg string, args ...slog.Attr) {
-// 	pid := s.pid.Load()
-// 	log(logger, logging.LevelDebug, "daemon-setup", pid, msg, args...)
-// }
+func (s *Setup) addonOnRegister(sess session.Register) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.errs != nil {
+		for _, err := range s.errs {
+			sess.Log().Errors(err)
+		}
+		return fmt.Errorf("%w: daemon addon registration failed", ErrSetup)
+	}
+
+	// Daemon config directory
+	daemonConfigDir := filepath.Join(sess.Get("app.fs.path.profile.config").String(), "daemon")
+	if stat, err := os.Stat(daemonConfigDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.MkdirAll(daemonConfigDir, 0750); err != nil {
+				return fmt.Errorf("failed to create daemon config directory: %w", err)
+			}
+		} else {
+			return err
+		}
+	} else if !stat.IsDir() {
+		return fmt.Errorf("%w: not a directory: %s", Error, daemonConfigDir)
+	}
+	if err := sess.Opts().Set("daemon.config.dir", daemonConfigDir); err != nil {
+		return fmt.Errorf("failed to set daemon pidfile path: %w", err)
+	}
+
+	// Daemon runtime directory
+	daemonRuntimeDir := filepath.Join(sess.Get("app.fs.path.run").String(), "daemon")
+	if stat, err := os.Stat(daemonRuntimeDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.MkdirAll(daemonRuntimeDir, 0750); err != nil {
+				return fmt.Errorf("failed to create daemon runtime directory: %w", err)
+			}
+		} else {
+			return err
+		}
+	} else if !stat.IsDir() {
+		return fmt.Errorf("%w: not a directory: %s", Error, daemonRuntimeDir)
+	}
+	if err := sess.Opts().Set("daemon.runtime.dir", daemonRuntimeDir); err != nil {
+		return fmt.Errorf("failed to set daemon pidfile path: %w", err)
+	}
+
+	// Daemon working directory
+	var (
+		wd    string
+		wdSet bool
+	)
+
+	if !sess.Get("daemon.wd").Empty() {
+		wd = sess.Get("daemon.wd").String()
+	} else {
+		wd = filepath.Join(daemonConfigDir, "workspace")
+	}
+
+	if err := os.MkdirAll(wd, 0750); err != nil {
+		return fmt.Errorf("failed to create daemon working directory: %w", err)
+	}
+	if !wdSet {
+		if err := sess.Settings().Set("daemon.wd", wd); err != nil {
+			return fmt.Errorf("failed to set daemon working directory: %w", err)
+		}
+	}
+
+	s.debug(sess.Log(), "daemon addon reqistered")
+	s.dispose()
+	return nil
+}
+
+func (s *Setup) cmds() []*command.Command {
+	var (
+		commands []*command.Command
+		wrapper  *command.Command
+		category string
+	)
+
+	if !s.settings.CTL.EnableWrapperCommand {
+		category = s.settings.CTL.CommandsCategory.String()
+	}
+
+	for _, cmdName := range s.settings.CTL.EnabledCommands {
+		if _, exists := s.customCommands[cmdName]; exists {
+			continue
+		}
+		if cmds.Has(cmdName) {
+			cmd, err := cmds.Get(cmdName, category)
+			if err != nil {
+				s.err(err.Error())
+				continue
+			}
+			commands = append(commands, cmd)
+		}
+	}
+
+	for _, cmd := range s.customCommands {
+		cmd.SetCategory(category)
+		commands = append(commands, cmd)
+	}
+
+	if !s.settings.CTL.EnableWrapperCommand {
+		return commands
+	}
+
+	if s.wrapperCommand != nil {
+		wrapper = s.wrapperCommand
+	} else {
+		wrapper = cmds.Wrapper(
+			s.settings.CTL.WrapperCommandName.String(),
+			s.settings.CTL.WrapperCommandDescription.String(),
+		)
+		if len(commands) == 0 {
+			wrapper.Disable(func(sess *session.Context) error {
+				return fmt.Errorf("%w: no daemon commands attached", Error)
+			})
+			wrapper.Do(func(sess *session.Context, args action.Args) error {
+				return nil
+			})
+		}
+	}
+
+	wrapper.WithSubCommands(commands...)
+
+	return []*command.Command{wrapper}
+}
+
+func (s *Setup) isSealed(method string) bool {
+	if s.sealed {
+		s.errSealed(method)
+		return true
+	}
+	return false
+}
+
+func (s *Setup) errSealed(method string) {
+	pid := s.pid.Load()
+	s.errs = append(s.errs, fmt.Errorf("%w: Setup(%d).%s: called after Setup was sealed or already used", ErrSetup, pid, method))
+}
+
+func (s *Setup) err(msg string) {
+	pid := s.pid.Load()
+	s.errs = append(s.errs, fmt.Errorf("%w: Setup(%d): %s", ErrSetup, pid, msg))
+}
+
+func (s *Setup) debug(logger logging.Logger, msg string, args ...slog.Attr) {
+	pid := s.pid.Load()
+	logd.DaemonLog(logger, logging.LevelDebug, "daemon-setup", pid, msg, args...)
+}
 
 func (s *Setup) info(logger logging.Logger, msg string, args ...slog.Attr) {
 	pid := s.pid.Load()
-	log(logger, logging.LevelInfo, "daemon-setup", pid, msg, args...)
+	logd.DaemonLog(logger, logging.LevelInfo, "daemon-setup", pid, msg, args...)
 }
 
-// func (s *Setup) ok(logger logging.Logger, msg string, args ...slog.Attr) {
-// 	pid := s.pid.Load()
-// 	log(logger, logging.LevelOk, "daemon-setup", pid, msg, args...)
-// }
-
-// func (s *Setup) err(logger logging.Logger, msg string, args ...slog.Attr) {
-// 	pid := s.pid.Load()
-// 	log(logger, logging.LevelError, "daemon-setup", pid, msg, args...)
-// }
-
-func (s *Setup) initerr(method, msg string) {
+func (s *Setup) error(logger logging.Logger, msg string, args ...slog.Attr) {
 	pid := s.pid.Load()
-	slog.Error(fmt.Sprintf("daemon-setup(%d).%s: %s (called after *Setup sealed)", pid, method, msg))
+	logd.DaemonLog(logger, logging.LevelError, "daemon-setup", pid, msg, args...)
 }
