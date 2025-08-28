@@ -282,6 +282,7 @@ func logsTail() *command.Command {
 		if err != nil {
 			return err
 		}
+		opts.LevelVar = nil
 		opts.SetSlogOutput = false
 		opts.Level = math.MinInt
 		if args.Flag("level").Present() {

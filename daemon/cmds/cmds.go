@@ -58,7 +58,7 @@ func Get(name, category string) (*command.Command, error) {
 	case "status":
 		// cmd = Status(category)
 	case "stop":
-		// cmd = Stop(category)
+		cmd = Stop(category)
 	}
 
 	return cmd, nil

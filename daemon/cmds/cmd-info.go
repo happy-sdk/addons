@@ -6,6 +6,7 @@ package cmds
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/happy-sdk/happy/pkg/settings"
@@ -15,6 +16,10 @@ import (
 	"github.com/happy-sdk/happy/sdk/session"
 )
 
+var secrets = []string{
+	"daemon.ipc.encryption_key",
+}
+
 func Info(category string) *command.Command {
 	cmd := command.New("info", command.Config{
 		Description: "Display daemon information",
@@ -22,11 +27,10 @@ func Info(category string) *command.Command {
 	})
 
 	cmd.Do(func(sess *session.Context, args action.Args) error {
-		t := textfmt.Table{}
-		t.AddRow("DAEMON SETTINGS", "")
-		t.AddDivider()
-		t.AddRow("KEY", "VALUE")
-		t.AddDivider()
+
+		t := textfmt.NewTable(
+			textfmt.TableTitle("DAEMON SETTINGS"),
+		)
 		for setting := range sess.Settings().All() {
 			if !strings.HasPrefix(setting.Key(), "daemon.") {
 				continue
@@ -36,20 +40,27 @@ func Info(category string) *command.Command {
 					t.AddRow(fmt.Sprintf("%s[]", setting.Key()), value)
 				}
 			} else {
-				t.AddRow(setting.Key(), setting.Display())
+				if slices.Contains(secrets, setting.Key()) {
+					t.AddRow(setting.Key(), "<redacted>")
+				} else {
+					t.AddRow(setting.Key(), setting.Display())
+				}
 			}
 		}
 
 		t.AddDivider()
 		t.AddRow("OPTIONS", "")
 		t.AddDivider()
-		t.AddRow("KEY", "VALUE")
 		t.AddDivider()
 		for opt := range sess.Opts().All() {
 			if !strings.HasPrefix(opt.Key(), "daemon.") {
 				continue
 			}
-			t.AddRow(opt.Key(), opt.String())
+			if slices.Contains(secrets, opt.Key()) {
+				t.AddRow(opt.Key(), "<redacted>")
+			} else {
+				t.AddRow(opt.Key(), opt.String())
+			}
 		}
 
 		fmt.Println(t.String())
