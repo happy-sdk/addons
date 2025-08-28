@@ -11,23 +11,12 @@ import (
 	"slices"
 	"time"
 
+	"github.com/happy-sdk/addons/daemon/services/ctl"
 	"github.com/happy-sdk/happy/pkg/settings"
 	"github.com/happy-sdk/happy/sdk/cli/command"
 	"github.com/happy-sdk/happy/sdk/session"
 	"golang.org/x/sys/unix"
 )
-
-var All = settings.StringSlice{
-	"health",
-	"info",
-	"logs",
-	"ping",
-	"reload",
-	"restart",
-	"start",
-	"status",
-	"stop",
-}
 
 // Wrapper creates a new command with the given name and description
 // what can be used for wrapping daemon commands.
@@ -41,7 +30,7 @@ func Wrapper(name, desc string) *command.Command {
 
 // Has checks if a command with the given name exists.
 func Has(name string) bool {
-	return slices.Contains(All, name)
+	return slices.Contains(ctl.AllCommands, name)
 }
 
 // Get returns command by name

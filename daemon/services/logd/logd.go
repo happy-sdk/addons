@@ -8,6 +8,10 @@ package logd
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/happy-sdk/happy/pkg/bytesize"
 	"github.com/happy-sdk/happy/pkg/logging"
@@ -16,7 +20,13 @@ import (
 	"github.com/happy-sdk/happy/pkg/settings"
 )
 
-const ServiceName = "daemon-logd"
+const (
+	ServiceName               = "daemon-logd"
+	OutputArchiveBatchDirName = "last_outputs"
+	OutputArchiveDirName      = "output_archives"
+	LogArchiveBatchDirName    = "last_logs"
+	LogArchiveDirName         = "log_archives"
+)
 
 var (
 	Error = fmt.Errorf(ServiceName)
@@ -25,15 +35,10 @@ var (
 // Settings defines the configuration for the daemon's logging service, managing
 // the log file's directory and name. It is used to customize logging.
 type Settings struct {
-	// ArchiveAfter specifies the age threshold after which log files are archived.
+	// ArchiveAfter specifies the age threshold after which log files are archived/compressed.
 	// Files older than this duration are moved to an archive directory during rotation or cleanup.
-	// Default is older than 7 days. -1 to disable archiving.
-	ArchiveAfter settings.Duration `default:"168h" mutation:"once"`
-
-	// ArchiveBatchPeriod specifies the timespan for batching logs archives.
-	// Logs within this period are grouped into a single archive (e.g., daily or weekly batches).
-	// Default is 24h (daily batches).
-	ArchiveBatchPeriod settings.Duration `default:"24h" mutation:"once"`
+	// Set it to '-' to disable archiving.
+	ArchiveSchedule cron.Expression `default:"@weekly" mutation:"once"`
 
 	// ArchiveCompressionDisabled specifies whether to compress archived log files.
 	ArchiveCompressionDisabled settings.Bool `default:"false" mutation:"once"`
@@ -60,9 +65,16 @@ type Settings struct {
 	// initial configuration.
 	Disabled settings.Bool `default:"false"`
 
-	// FileName specifies the name of the daemon's latest log file.
-	// Defaults to "latest.log".
-	FileName settings.String `default:"latest.log"`
+	// LogFileName specifies the name of the daemon's latest log file.
+	// Defaults to "daemon.log".
+	LogFileName settings.String `default:"daemon.log"`
+
+	// OutputFileName specifies the name of the daemon's latest log file for stdout/stderr.
+	// Defaults to "output.log".
+	// Setting it to "-" disables logging stdout/stderr.
+	// and daemon process stdrout/stderr are directed to
+	// io.Discard
+	OutputFileName settings.String `default:"output.log"`
 
 	// KeepEmptyLogs prevents deletion of empty log files during rotation.
 	// When false (default), empty log files are pruned on rotation.
@@ -82,13 +94,13 @@ type Settings struct {
 	// scheduled deadline. This setting is immutable.
 	StartupRotationDisabled settings.Bool `default:"false" mutation:"once"`
 
-	// RotationInterval specifies the interval at which log files are rotated.
+	// RotationSchedule specifies the interval at which log files are rotated.
 	// It uses cron expressions to define the rotation schedule.
 	// Default is "@daily" (rotate daily at midnight).
 	// '-' disables log rotation cron, logs are still rotated
 	// on daemon startup if StartupRotationDisabled is false or
 	// on excessive size when MaxFileSize is greater than 0..
-	RotationInterval cron.Expression `default:"@daily" mutation:"once"`
+	RotationSchedule cron.Expression `default:"@daily" mutation:"once"`
 }
 
 func (s *Settings) Blueprint() (*settings.Blueprint, error) {
@@ -105,7 +117,7 @@ func (s *Settings) Defaults() {}
 func Options() []*options.OptionSpec {
 	return []*options.OptionSpec{
 		options.NewOption("log.file", ""),
-		options.NewOption("log.dir", ""),
+		options.NewOption("log.output", ""),
 	}
 }
 
@@ -115,4 +127,74 @@ func DaemonLog(logger logging.Logger, lvl logging.Level, label string, pid int64
 		slog.Int64("pid", pid),
 	))
 	logger.LogDepth(2, lvl, msg, args...)
+}
+
+// getArchivePath constructs correct name for next available sequence
+// Uses zero-padded 5-digit sequence numbers for proper lexicographic sorting
+// e.g. tarpath := getArchivePath(archiveDir, archiveName, ".tar.gz")
+func getArchivePath(archiveDir, archiveName, ext string) string {
+	archivePath := filepath.Join(archiveDir, archiveName+ext)
+
+	// If base archive doesn't exist, return it
+	if _, err := os.Stat(archivePath); err != nil {
+		return archivePath
+	}
+
+	// Use shared helper to find max sequence (note: this is a standalone function,
+	// so we'll inline the logic here or make findMaxSequenceInDir a standalone function)
+	maxSequence := findMaxSequenceInDir(archiveDir, archiveName, ext)
+
+	// Return next sequence with zero-padding (5 digits)
+	nextSequence := maxSequence + 1
+	return filepath.Join(archiveDir, fmt.Sprintf("%s.%05d%s", archiveName, nextSequence, ext))
+}
+
+// findMaxSequenceInDir is a shared helper that finds the highest sequence number
+// in a directory for files matching the pattern nameWithoutExt.XXXXX.ext
+// Made standalone so it can be used by both methods and standalone functions
+func findMaxSequenceInDir(dir, nameWithoutExt, ext string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+
+	maxSequence := 0
+	expectedPrefix := nameWithoutExt + "."
+
+	for _, entry := range entries {
+		name := entry.Name()
+
+		// Must match our pattern: nameWithoutExt.XXXXX.ext
+		if !strings.HasPrefix(name, expectedPrefix) || !strings.HasSuffix(name, ext) {
+			continue
+		}
+
+		// Extract sequence part
+		middle := strings.TrimPrefix(strings.TrimSuffix(name, ext), expectedPrefix)
+
+		// Sequence should be only digits
+		if !isAllDigits(middle) {
+			continue
+		}
+
+		// Parse and track max sequence
+		if seq, err := strconv.Atoi(middle); err == nil && seq > 0 && seq > maxSequence {
+			maxSequence = seq
+		}
+	}
+
+	return maxSequence
+}
+
+// isAllDigits checks if a string contains only digits
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

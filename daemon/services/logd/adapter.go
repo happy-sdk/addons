@@ -8,6 +8,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"math"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -24,17 +25,22 @@ type Adapter struct {
 }
 
 type AdapterTelemetry struct {
-	Notices        atomic.Uint64
-	NotImplemented atomic.Uint64
-	Warnings       atomic.Uint64
-	Deprecations   atomic.Uint64
-	Errors         atomic.Uint64
-	Bugs           atomic.Uint64
-	Others         atomic.Uint64
-	Total          atomic.Uint64
+	LevelHappy          atomic.Uint64
+	LevelHappyInit      atomic.Uint64
+	LevelDebug          atomic.Uint64
+	LevelInfo           atomic.Uint64
+	LevelOk             atomic.Uint64
+	LevelNotice         atomic.Uint64
+	LevelNotImplemented atomic.Uint64
+	LevelWarn           atomic.Uint64
+	LevelDeprecated     atomic.Uint64
+	LevelError          atomic.Uint64
+	LevelBUG            atomic.Uint64
+	LevelAlways         atomic.Uint64
+	Total               atomic.Uint64
 }
 
-func NewAdapter(sess *session.Context, w io.WriteCloser, t *AdapterTelemetry) (logging.Adapter, error) {
+func NewAdapter(sess *session.Context, w io.WriteCloser, atel *AdapterTelemetry) (logging.Adapter, error) {
 	opts, err := sess.Log().Options()
 	if err != nil {
 		return nil, err
@@ -46,6 +52,9 @@ func NewAdapter(sess *session.Context, w io.WriteCloser, t *AdapterTelemetry) (l
 		tsfmt = opts.TimestampFormat
 	}
 
+	levelHappy := logging.Level(math.MinInt)
+	levelInit := logging.Level(levelHappy + 1)
+
 	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: opts.LevelVar,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
@@ -54,22 +63,32 @@ func NewAdapter(sess *session.Context, w io.WriteCloser, t *AdapterTelemetry) (l
 				lvl := logging.Level(level)
 				a.Value = slog.StringValue(lvl.String())
 				switch lvl {
+				case levelHappy:
+					atel.LevelHappy.Add(1)
+				case levelInit:
+					atel.LevelHappyInit.Add(1)
+				case logging.LevelDebug:
+					atel.LevelDebug.Add(1)
+				case logging.LevelInfo:
+					atel.LevelInfo.Add(1)
+				case logging.LevelOk:
+					atel.LevelOk.Add(1)
 				case logging.LevelNotice:
-					t.Notices.Add(1)
+					atel.LevelNotice.Add(1)
 				case logging.LevelNotImplemented:
-					t.NotImplemented.Add(1)
+					atel.LevelNotImplemented.Add(1)
 				case logging.LevelWarn:
-					t.Warnings.Add(1)
+					atel.LevelWarn.Add(1)
 				case logging.LevelDeprecated:
-					t.Deprecations.Add(1)
+					atel.LevelDeprecated.Add(1)
 				case logging.LevelError:
-					t.Errors.Add(1)
+					atel.LevelError.Add(1)
 				case logging.LevelBUG:
-					t.Bugs.Add(1)
+					atel.LevelBUG.Add(1)
 				default:
-					t.Others.Add(1)
+					atel.LevelAlways.Add(1)
 				}
-				t.Total.Add(1)
+				atel.Total.Add(1)
 				return a
 			}
 			if a.Key == slog.TimeKey {
