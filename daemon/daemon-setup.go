@@ -99,24 +99,61 @@ func (s *Setup) WithCommand(cmd *command.Command) {
 	s.customCommands[cmdName] = cmd
 }
 
-// OnStart sets the start action for the daemon.
+// OnStart registers an action to run after all daemon services have started.
+// It runs last in the startup sequence and may block, delaying full daemon readiness
 func (s *Setup) OnStart(action action.WithArgs) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.isSealed("OnStart") {
 		return
 	}
-	// s.startAction = action
+	s.daemon.OnStart(action)
 }
 
-// OnStop sets the stop action for the daemon.
+// OnStop registers an action to run after all daemon services have stopped.
+// The action receives a [*session.Context] and an error if there was any.
 func (s *Setup) OnStop(action action.WithPrevErr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.isSealed("OnStop") {
 		return
 	}
-	// s.stopAction = action
+	s.daemon.OnStop(action)
+}
+
+// OnReload registers an action to run during a reload event (e.g., SIGHUP), after
+// the daemon is stopped (if it was running) and before it is started again. The action
+// receives a [*session.Context] and an error, which is [process.ErrDaemonNotRunning]
+// if the daemon was not running. If the action returns an error, the reload is canceled,
+// and the daemon will not be started. The action may block, delaying the reload.
+//
+// Example:
+//
+//	setup.OnReload(func(sess *session.Context, prevErr error) error {
+//	    slog.Info("Reloading daemon configuration")
+//	    if errors.Is(prevErr, process.ErrDaemonNotRunning) {
+//	        slog.Warn("Daemon was not running")
+//	    }
+//	    return nil
+//	})
+func (s *Setup) OnReload(action action.WithPrevErr) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.isSealed("OnReload") {
+		return
+	}
+	s.daemon.OnReload(action)
+}
+
+// WithExternalServices registers external services to be started and stopped along with the daemon.
+// Services must be registered elsewhere in the application or by other addons.
+func (s *Setup) WithExternalServices(svcs ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.isSealed("WithExternalServices") {
+		return
+	}
+	s.daemon.WithExternalServices(svcs...)
 }
 
 // Addon builds and returns a Happy SDK addon configured with the current Setup.
@@ -142,7 +179,6 @@ func (s *Setup) Addon() *addon.Addon {
 		WithSettings(s.settings)
 
 	opts := []*options.OptionSpec{
-		options.NewOption("config.dir", ""),
 		options.NewOption("runtime.dir", ""),
 	}
 	opts = append(opts, logd.Options()...)
@@ -177,25 +213,12 @@ func (s *Setup) addonOnRegister(sess session.Register) error {
 		return fmt.Errorf("%w: daemon addon registration failed", ErrSetup)
 	}
 
-	// Daemon config directory
-	daemonConfigDir := filepath.Join(sess.Get("app.fs.path.profile.config").String(), "daemon")
-	if stat, err := os.Stat(daemonConfigDir); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			if err := os.MkdirAll(daemonConfigDir, 0750); err != nil {
-				return fmt.Errorf("failed to create daemon config directory: %w", err)
-			}
-		} else {
-			return err
-		}
-	} else if !stat.IsDir() {
-		return fmt.Errorf("%w: not a directory: %s", Error, daemonConfigDir)
-	}
-	if err := sess.Opts().Set("daemon.config.dir", daemonConfigDir); err != nil {
-		return fmt.Errorf("failed to set daemon pidfile path: %w", err)
+	if err := s.configurePaths(sess); err != nil {
+		return fmt.Errorf("%w: %s", ErrSetup, err.Error())
 	}
 
 	// Daemon runtime directory
-	daemonRuntimeDir := filepath.Join(sess.Get("app.fs.path.run").String(), "daemon")
+	daemonRuntimeDir := filepath.Join(sess.Get("app.fs.path.profile.run").String(), "daemon")
 	if stat, err := os.Stat(daemonRuntimeDir); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			if err := os.MkdirAll(daemonRuntimeDir, 0750); err != nil {
@@ -211,29 +234,59 @@ func (s *Setup) addonOnRegister(sess session.Register) error {
 		return fmt.Errorf("failed to set daemon pidfile path: %w", err)
 	}
 
-	// Daemon working directory
-	var (
-		wd    string
-		wdSet bool
-	)
-
-	if !sess.Get("daemon.wd").Empty() {
-		wd = sess.Get("daemon.wd").String()
-	} else {
-		wd = filepath.Join(daemonConfigDir, "workspace")
-	}
-
-	if err := os.MkdirAll(wd, 0750); err != nil {
-		return fmt.Errorf("failed to create daemon working directory: %w", err)
-	}
-	if !wdSet {
-		if err := sess.Settings().Set("daemon.wd", wd); err != nil {
-			return fmt.Errorf("failed to set daemon working directory: %w", err)
-		}
-	}
-
 	s.debug(sess.Log(), "daemon addon reqistered")
 	s.dispose()
+	return nil
+}
+
+func (s *Setup) configurePaths(sess session.Register) error {
+	var (
+		profileCacheDir  = sess.Opts().Get("app.fs.path.profile.cache").String()
+		profileConfigDir = sess.Opts().Get("app.fs.path.profile.config").String()
+		profileDataDir   = sess.Opts().Get("app.fs.path.profile.data").String()
+		profileLogsDir   = sess.Opts().Get("app.fs.path.profile.logs").String()
+		profileStateDir  = sess.Opts().Get("app.fs.path.profile.state").String()
+		dirName          = sess.Settings().Get("daemon.fs.path.dir_name").String()
+		pathConfig       = make(map[string]string)
+	)
+
+	// Daemon cache path
+	if !sess.Settings().Get("daemon.fs.path.cache").IsSet() {
+		pathConfig["daemon.fs.path.cache"] = filepath.Join(profileCacheDir, dirName)
+	}
+
+	// Daemon config path
+	if !sess.Settings().Get("daemon.fs.path.config").IsSet() {
+		pathConfig["daemon.fs.path.config"] = filepath.Join(profileConfigDir, dirName)
+	}
+
+	// Daemon data path
+	dataPath := sess.Settings().Get("daemon.fs.path.data").String()
+	if !sess.Settings().Get("daemon.fs.path.data").IsSet() {
+		dataPath = filepath.Join(profileDataDir, dirName)
+		pathConfig["daemon.fs.path.data"] = dataPath
+	}
+
+	// Daemon logs path
+	if !sess.Settings().Get("daemon.fs.path.logs").IsSet() {
+		pathConfig["daemon.fs.path.logs"] = filepath.Join(profileLogsDir, dirName)
+	}
+
+	// Daemon state path
+	if !sess.Settings().Get("daemon.fs.path.state").IsSet() {
+		pathConfig["daemon.fs.path.state"] = filepath.Join(profileStateDir, dirName)
+	}
+
+	// Daemon working directory
+	if !sess.Settings().Get("daemon.fs.path.wd").IsSet() {
+		pathConfig["daemon.fs.path.wd"] = filepath.Join(dataPath, "workspace")
+	}
+
+	for k, v := range pathConfig {
+		if err := sess.Settings().Set(k, v); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
