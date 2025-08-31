@@ -332,7 +332,7 @@ func logsTail() *command.Command {
 			seen int
 			end  = args.Flag("lines").Var().Int()
 		)
-		ctx, cancel := context.WithTimeoutCause(sess.Context(), time.Second*2, errors.New("no log entries in 2 seconds"))
+		ctx, cancel := context.WithTimeoutCause(sess.Context(), time.Second, errors.New("no log entries in 2 seconds"))
 		defer cancel()
 
 		// Tail the log file
@@ -349,6 +349,9 @@ func logsTail() *command.Command {
 			}
 		}
 
+		if seen == 0 {
+			fmt.Println("no log entries")
+		}
 		return nil
 	})
 

@@ -25,6 +25,11 @@ import (
 
 // LOG FILES
 func (l *Logger) cronLogRotationSchedule(sess *session.Context) error {
+	if !l.ready.Load() {
+		l.debug(sess.Log(), "skip log rotation, too early")
+		return nil
+	}
+
 	l.mu.RLock()
 	logfile := l.file
 	l.mu.RUnlock()
@@ -80,59 +85,12 @@ func (l *Logger) cronLogArchiveSchedule(sess *session.Context) error {
 
 	return l.jobCleanOldArchives(sess, archiveDir)
 }
-func (l *Logger) jobCleanOldArchives(sess *session.Context, archiveDir string) error {
-	// cleanup
-	archiveEntries, err := os.ReadDir(archiveDir)
-	if err != nil {
-		return err
-	}
-	if len(archiveEntries) == 0 {
-		return nil
-	}
-
-	l.debug(sess.Log(),
-		"clean up old output log archives",
-		slog.String("archive_dir", archiveDir),
-	)
-
-	archiveRetentionPeriod := sess.Settings().Get("daemon.log.archive_retention_period").Value().Duration()
-	for _, entry := range archiveEntries {
-		archiveAbs := filepath.Join(archiveDir, entry.Name())
-
-		stat, err := fsutils.Stat(archiveAbs)
-		if err != nil {
-			l.notice(sess.Log(), "failed to stat log archive", slog.String("err", err.Error()))
-			continue
-		}
-
-		if entry.IsDir() {
-			// for dirs use change time instead birth time
-			shouldRemove := !stat.Ctime.IsZero() && stat.Ctime.Before(time.Now().Add(-archiveRetentionPeriod))
-			if !shouldRemove {
-				continue
-			}
-			if err := os.RemoveAll(archiveAbs); err != nil {
-				l.warn(sess.Log(), "failed to delete old log archive", slog.String("err", err.Error()), slog.String("archive", filepath.Base(archiveAbs)))
-				continue
-			}
-
-		} else {
-			shouldRemove := !stat.Btime.IsZero() && stat.Btime.Before(time.Now().Add(-archiveRetentionPeriod))
-			if !shouldRemove {
-				continue
-			}
-			if err := os.Remove(archiveAbs); err != nil {
-				l.warn(sess.Log(), "failed to delete old log archive", slog.String("err", err.Error()), slog.String("archive", filepath.Base(archiveAbs)))
-				continue
-			}
-		}
-		l.info(sess.Log(), "removed old log archive", slog.String("archive", filepath.Base(archiveAbs)))
-	}
-
-	return nil
-}
 
 func (l *Logger) cronLogExcessiveFileSize(sess *session.Context) error {
+	if !l.ready.Load() {
+		l.debug(sess.Log(), "skip log size check, too early")
+		return nil
+	}
 	l.mu.RLock()
 	logfile := l.file
 	l.mu.RUnlock()
@@ -141,6 +99,11 @@ func (l *Logger) cronLogExcessiveFileSize(sess *session.Context) error {
 
 // OUTPUT FILES
 func (l *Logger) cronOutputRotationSchedule(sess *session.Context) error {
+
+	if !l.ready.Load() {
+		l.debug(sess.Log(), "skip output rotation, too early")
+		return nil
+	}
 
 	outputFileName := sess.Settings().Get("daemon.log.output_file_name").String()
 	if outputFileName == "" || outputFileName == "-" {
@@ -183,6 +146,7 @@ func (l *Logger) cronOutputRotationSchedule(sess *session.Context) error {
 	if err != nil {
 		return err
 	}
+	defer outfile.Close()
 
 	if err := l.jobRotate(sess, outfile); err != nil {
 		return fmt.Errorf("%w: failed to rotate file %s: %s", Error, outfile.Name(), err.Error())
@@ -264,7 +228,123 @@ func (l *Logger) cronOutputArchiveSchedule(sess *session.Context) error {
 }
 
 func (l *Logger) cronOutputExcessiveFileSize(sess *session.Context) error {
-	// return l.jobExcessiveFileSize(sess)
+	if !l.ready.Load() {
+		l.debug(sess.Log(), "skip log output size check, too early")
+		return nil
+	}
+
+	rotationScheduleExpr := sess.Settings().Get("daemon.log.rotation_schedule").String()
+	rotationSchedule, err := cron.ParseWithOptionalSecond(rotationScheduleExpr)
+	if err != nil {
+		return err
+	}
+	nextRotation := rotationSchedule.Next(time.Now())
+
+	if nextRotation.IsZero() && time.Until(nextRotation) < time.Minute {
+		l.debug(sess.Log(), "output rotation due to size job skipped to prevent concurrent rotation")
+		return nil
+	}
+
+	maxsize, err := bytesize.Parse(sess.Settings().Get("daemon.log.max_file_size").Value().String())
+	if err != nil {
+		return fmt.Errorf("%w: failed to parse max log file size setting", Error)
+	}
+
+	outputFileName := sess.Settings().Get("daemon.log.output_file_name").String()
+	if outputFileName == "" || outputFileName == "-" {
+		return nil
+	}
+
+	outputLogDir := sess.Settings().Get("daemon.fs.path.logs").String()
+	outputLogFilePath := filepath.Join(
+		outputLogDir,
+		outputFileName,
+	)
+
+	outputLastDir := filepath.Join(outputLogDir, OutputArchiveBatchDirName)
+	prefix := strings.TrimSuffix(outputFileName, filepath.Ext(outputFileName)) + "_"
+	outfile, err := rotatefile.Open(
+		outputLogFilePath,
+		rotatefile.RotatedFilePrefix(prefix),
+		rotatefile.ArchiveDir(outputLastDir, 0),
+	)
+	if err != nil {
+		return err
+	}
+	defer outfile.Close()
+
+	stat, err := outfile.Stat()
+	if err != nil {
+		return fmt.Errorf("%w: failed to stat %s file", Error, outfile.Name())
+	}
+	// ok return
+	if maxsize.Bytes() > stat.Size {
+		return nil
+	}
+
+	l.notice(sess.Log(),
+		fmt.Sprintf(
+			"rotate due to size: %s > suggested size %s",
+			bytesize.IECSize(stat.Size).String(),
+			maxsize.String(),
+		),
+		slog.Uint64("current_size", stat.Size),
+		slog.Uint64("max_size", maxsize.Bytes()),
+		slog.String("file", outfile.Name()),
+	)
+
+	return l.cronOutputRotationSchedule(sess)
+}
+
+func (l *Logger) jobCleanOldArchives(sess *session.Context, archiveDir string) error {
+	// cleanup
+	archiveEntries, err := os.ReadDir(archiveDir)
+	if err != nil {
+		return err
+	}
+	if len(archiveEntries) == 0 {
+		return nil
+	}
+
+	l.debug(sess.Log(),
+		"clean up old output log archives",
+		slog.String("archive_dir", archiveDir),
+	)
+
+	archiveRetentionPeriod := sess.Settings().Get("daemon.log.archive_retention_period").Value().Duration()
+	for _, entry := range archiveEntries {
+		archiveAbs := filepath.Join(archiveDir, entry.Name())
+
+		stat, err := fsutils.Stat(archiveAbs)
+		if err != nil {
+			l.notice(sess.Log(), "failed to stat log archive", slog.String("err", err.Error()))
+			continue
+		}
+
+		if entry.IsDir() {
+			// for dirs use change time instead birth time
+			shouldRemove := !stat.Ctime.IsZero() && stat.Ctime.Before(time.Now().Add(-archiveRetentionPeriod))
+			if !shouldRemove {
+				continue
+			}
+			if err := os.RemoveAll(archiveAbs); err != nil {
+				l.warn(sess.Log(), "failed to delete old log archive", slog.String("err", err.Error()), slog.String("archive", filepath.Base(archiveAbs)))
+				continue
+			}
+
+		} else {
+			shouldRemove := !stat.Btime.IsZero() && stat.Btime.Before(time.Now().Add(-archiveRetentionPeriod))
+			if !shouldRemove {
+				continue
+			}
+			if err := os.Remove(archiveAbs); err != nil {
+				l.warn(sess.Log(), "failed to delete old log archive", slog.String("err", err.Error()), slog.String("archive", filepath.Base(archiveAbs)))
+				continue
+			}
+		}
+		l.info(sess.Log(), "removed old log archive", slog.String("archive", filepath.Base(archiveAbs)))
+	}
+
 	return nil
 }
 
@@ -288,7 +368,7 @@ func (l *Logger) jobExcessiveFileSize(sess *session.Context, file *rotatefile.Fi
 		return fmt.Errorf("%w: failed to parse max log file size setting", Error)
 	}
 
-	stat, err := l.file.Stat()
+	stat, err := file.Stat()
 	if err != nil {
 		return fmt.Errorf("%w: failed to stat %s file", Error, file.Name())
 	}
@@ -497,12 +577,13 @@ func (l *Logger) jobCreateArchive(sess *session.Context, batchDir, archiveDir st
 		count++
 		barches[filepath.Base(destpath)] = destpath
 	}
-	l.debug(sess.Log(), fmt.Sprintf("archive %d batches", count))
 
 	// no compression
-	if compDisabled {
+	if compDisabled || count == 0 {
 		return count, nil
 	}
+
+	l.debug(sess.Log(), fmt.Sprintf("archive %d batches", count))
 
 	// compress
 	for name, dirpath := range barches {
@@ -514,7 +595,6 @@ func (l *Logger) jobCreateArchive(sess *session.Context, batchDir, archiveDir st
 		entryname, _, _ := strings.Cut(strings.TrimSuffix(name, ".tar.gz"), ".")
 
 		tarpath := getArchivePath(archiveDir, entryname, ".tar.gz")
-		sess.Log().Warn(fmt.Sprintf("tarpath: %s", tarpath))
 
 		if err := fsutils.BackupDir(context.Background(), dirpath, tarpath, true, nil); err != nil {
 			return count, fmt.Errorf("failed to compress log archive batch :%s", err.Error())
@@ -526,7 +606,9 @@ func (l *Logger) jobCreateArchive(sess *session.Context, batchDir, archiveDir st
 			slog.Time("to", newest),
 		)
 	}
-	l.debug(sess.Log(), fmt.Sprintf("compressed %d batches", count))
+	if count > 0 {
+		l.debug(sess.Log(), fmt.Sprintf("compressed %d batches", count))
+	}
 
 	return count, nil
 }

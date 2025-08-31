@@ -197,7 +197,6 @@ func (l *Logger) onStart(sess *session.Context) (err error) {
 	}()
 
 	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	state := l.state
 
@@ -205,6 +204,7 @@ func (l *Logger) onStart(sess *session.Context) (err error) {
 		state.UpdateLogger(func(ls *telemetry.LoggerState) {
 			ls.Service.Status = telemetry.ServiceStatusDisabled
 		})
+		l.mu.Unlock()
 		return fmt.Errorf("%w: logger service is disabled", Error)
 	}
 
@@ -231,21 +231,25 @@ func (l *Logger) onStart(sess *session.Context) (err error) {
 	// Adapter takes ownership and closes the file when daemon exits
 	l.file, err = rotatefile.Open(logfilePath, ropts...)
 	if err != nil {
+		l.mu.Unlock()
 		return err
 	}
 
 	adapter, err := NewAdapter(sess, l.file, l.atel)
 	if err != nil {
+		l.mu.Unlock()
 		return err
 	}
 
 	switch sess.Get("daemon.process.spawn_strategy").String() {
 	case "foreground":
 		if err := sess.Log().AttachAdapter(adapter); err != nil {
+			l.mu.Unlock()
 			return err
 		}
 	case "daemon":
 		if err := sess.Log().SetAdapter(adapter); err != nil {
+			l.mu.Unlock()
 			return err
 		}
 	}
@@ -261,6 +265,24 @@ func (l *Logger) onStart(sess *session.Context) (err error) {
 		fmt.Sprintf("%s logger service started %s", sess.Get("app.slug"), took),
 		slog.Duration("took", took),
 	)
+
+	l.mu.Unlock()
+
+	if sess.Get("app.services.cron_on_service_start").Bool() {
+		go func() {
+			time.Sleep(time.Second * 5)
+			l.ready.Store(true)
+		}()
+	} else {
+		l.ready.Store(true)
+
+		if err := l.cronLogArchiveSchedule(sess); err != nil {
+			return err
+		}
+		if err := l.cronOutputArchiveSchedule(sess); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }

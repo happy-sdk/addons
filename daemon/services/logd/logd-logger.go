@@ -26,6 +26,7 @@ type Logger struct {
 	state *telemetry.DaemonState
 	file  *rotatefile.File
 	atel  *AdapterTelemetry
+	ready atomic.Bool
 }
 
 func New(state *telemetry.DaemonState) *Logger {
