@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -182,13 +183,21 @@ func logStatFileInfoTable(sess *session.Context, args action.Args, logdir string
 		fmt.Sprintf("Inode: %d", tss.Ino),
 		fmt.Sprintf("Links: %d", tss.Nlink),
 	)
+	userInfo, err := user.LookupId(fmt.Sprint(tss.Uid))
+	if err != nil {
+		return nil, err
+	}
+	groupInfo, err := user.LookupGroupId(fmt.Sprint(tss.Gid))
+	if err != nil {
+		return nil, err
+	}
 
 	acct := textfmt.NewTable()
 	acct.AddRow(
 		"Access:",
 		fmt.Sprintf("(%04o/%s)", tss.Mode&0777, os.FileMode(tss.Mode).String()),
-		fmt.Sprintf("User: %d", tss.Uid),
-		fmt.Sprintf("Group: %d", tss.Gid),
+		fmt.Sprintf("User: %d/%s", tss.Uid, userInfo.Username),
+		fmt.Sprintf("Group: %d/%s", tss.Gid, groupInfo.Name),
 	)
 
 	latest.Append(acct)
