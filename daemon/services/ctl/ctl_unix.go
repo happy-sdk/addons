@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/happy-sdk/addons/daemon/services/logd"
+	"github.com/happy-sdk/happy/pkg/fsutils/pidfile"
 	"github.com/happy-sdk/happy/pkg/fsutils/rotatefile"
 	"github.com/happy-sdk/happy/sdk/action"
 	"github.com/happy-sdk/happy/sdk/session"
@@ -99,8 +100,20 @@ func startDoubleFork(sess *session.Context, args action.Args) error {
 		if err := waitForChild(firstPid, 30*time.Second); err != nil {
 			return fmt.Errorf("launcher process failed: %w", err)
 		}
+		dpid, err := waitForPid(sess)
+		if err != nil {
+			return fmt.Errorf("failed to wait for daemon PID: %w", err)
+		}
 
-		logInfo(sess.Log(), "daemon launched successfully via double fork")
+		logInfo(sess.Log(), fmt.Sprintf("daemon launched successfully via double fork, pid %d", dpid))
+
+		if err := sess.Opts().Set("daemon.process.pid", dpid); err != nil {
+			return fmt.Errorf("failed to set daemon pid: %w", err)
+		}
+		if err := sess.Opts().Set("daemon.process.running", dpid > 0); err != nil {
+			return fmt.Errorf("failed to set daemon running status: %w", err)
+		}
+
 		return nil
 	}
 
@@ -113,7 +126,7 @@ func startDoubleFork(sess *session.Context, args action.Args) error {
 		os.Exit(1)
 	}
 
-	logDebug(sess.Log(), fmt.Sprintf("daemon process created with PID %d", dpid))
+	logInfo(sess.Log(), fmt.Sprintf("daemon process created with PID %d", dpid))
 	os.Exit(0)
 
 	return nil
@@ -244,5 +257,38 @@ func waitForChild(pid int, timeout time.Duration) error {
 		return err
 	case <-ctx.Done():
 		return fmt.Errorf("timeout waiting for child process")
+	}
+}
+
+// waitForPid waits for daemon to create pid file with timeout
+func waitForPid(sess *session.Context) (int, error) {
+	pidfilePath := sess.Opts().Get("daemon.process.pidfile").String()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("%w: timeout waiting for daemon to create pid file", Error)
+		case <-ticker.C:
+			pf, err := pidfile.Open(pidfilePath)
+			if err != nil {
+				// PidFile doesn't exist yet or can't be opened, continue waiting
+				continue
+			}
+
+			dpid, err := pf.PID()
+			if err != nil {
+				pf.Close()
+				continue
+			}
+
+			pf.Close()
+			return dpid, nil
+		}
 	}
 }

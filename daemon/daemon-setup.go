@@ -272,7 +272,7 @@ func (s *Setup) configurePaths(sess session.Register) error {
 	}
 
 	// Daemon runtime directory
-	daemonRuntimeDir := filepath.Join(sess.Get("app.fs.path.profile.run").String(), "daemon")
+	daemonRuntimeDir := filepath.Join(sess.Get("app.fs.path.profile.run").String(), dirName)
 	if err := sess.Opts().Set("daemon.runtime.dir", daemonRuntimeDir); err != nil {
 		return fmt.Errorf("failed to set daemon pidfile path: %w", err)
 	}
@@ -287,13 +287,15 @@ func (s *Setup) configurePaths(sess session.Register) error {
 		"daemon.runtime.dir",
 	}
 
-	for _, dir := range daemonDirs {
+	for _, dirKey := range daemonDirs {
+		dir := sess.Get(dirKey).String()
 		if stat, err := os.Stat(dir); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				if err := os.MkdirAll(dir, 0750); err != nil {
-					s.err(fmt.Sprintf("creating: ", dir))
+					s.error(sess.Log(), fmt.Sprintf("creating: %s", dir))
 					return fmt.Errorf("failed to create daemon directory: %w", err)
 				}
+				s.debug(sess.Log(), fmt.Sprintf("creating: %s", dir))
 			}
 		} else if !stat.IsDir() {
 			return fmt.Errorf("%w: not a directory: %s", Error, daemonRuntimeDir)
