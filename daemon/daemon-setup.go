@@ -26,6 +26,7 @@ import (
 	"github.com/happy-sdk/happy/sdk/action"
 	"github.com/happy-sdk/happy/sdk/addon"
 	"github.com/happy-sdk/happy/sdk/cli/command"
+	"github.com/happy-sdk/happy/sdk/services"
 	"github.com/happy-sdk/happy/sdk/session"
 )
 
@@ -39,8 +40,9 @@ type Setup struct {
 	wrapperCommand *command.Command
 	customCommands map[string]*command.Command
 
-	daemon *process.Manager
-	state  *telemetry.DaemonState
+	daemon   *process.Manager
+	state    *telemetry.DaemonState
+	services []*services.Service
 }
 
 func (s *Setup) dispose() {
@@ -50,6 +52,7 @@ func (s *Setup) dispose() {
 	s.customCommands = nil
 	s.daemon = nil
 	s.state = nil
+	s.services = nil
 }
 
 // New returns a new daemon Setup instance, to configure the daemon.
@@ -153,7 +156,23 @@ func (s *Setup) WithExternalServices(svcs ...string) {
 	if s.isSealed("WithExternalServices") {
 		return
 	}
-	s.daemon.WithExternalServices(svcs...)
+	s.daemon.WithServices(svcs...)
+}
+
+func (s *Setup) WithServices(svc ...*services.Service) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.isSealed("WithServices") {
+		return
+	}
+	for _, service := range svc {
+		if service == nil {
+			continue
+		}
+		name := service.Slug()
+		s.daemon.WithServices(name)
+		s.services = append(s.services, service)
+	}
 }
 
 // Addon builds and returns a Happy SDK addon configured with the current Setup.
@@ -179,7 +198,7 @@ func (s *Setup) Addon() *addon.Addon {
 		WithSettings(s.settings)
 
 	opts := []*options.OptionSpec{
-		options.NewOption("runtime.dir", ""),
+		options.NewOption("fs.path.runtime", ""),
 	}
 	opts = append(opts, logd.Options()...)
 	opts = append(opts, ipc.Options()...)
@@ -199,6 +218,7 @@ func (s *Setup) Addon() *addon.Addon {
 		dbus.New().Service(),
 	)
 
+	a.ProvideServices(s.services...)
 	return a
 }
 
@@ -224,13 +244,14 @@ func (s *Setup) addonOnRegister(sess session.Register) error {
 
 func (s *Setup) configurePaths(sess session.Register) error {
 	var (
-		profileCacheDir  = sess.Opts().Get("app.fs.path.profile.cache").String()
-		profileConfigDir = sess.Opts().Get("app.fs.path.profile.config").String()
-		profileDataDir   = sess.Opts().Get("app.fs.path.profile.data").String()
-		profileLogsDir   = sess.Opts().Get("app.fs.path.profile.logs").String()
-		profileStateDir  = sess.Opts().Get("app.fs.path.profile.state").String()
-		dirName          = sess.Settings().Get("daemon.fs.path.dir_name").String()
-		pathConfig       = make(map[string]string)
+		profileCacheDir   = sess.Opts().Get("app.fs.path.profile.cache").String()
+		profileConfigDir  = sess.Opts().Get("app.fs.path.profile.config").String()
+		profileDataDir    = sess.Opts().Get("app.fs.path.profile.data").String()
+		profileBackupsDir = sess.Opts().Get("app.fs.path.profile.backups").String()
+		profileLogsDir    = sess.Opts().Get("app.fs.path.profile.logs").String()
+		profileStateDir   = sess.Opts().Get("app.fs.path.profile.state").String()
+		dirName           = sess.Settings().Get("daemon.fs.path.dir_name").String()
+		pathConfig        = make(map[string]string)
 	)
 
 	// Daemon cache path
@@ -250,6 +271,11 @@ func (s *Setup) configurePaths(sess session.Register) error {
 		pathConfig["daemon.fs.path.data"] = dataPath
 	}
 
+	// Daemon backups path
+	if !sess.Settings().Get("daemon.fs.path.backups").IsSet() {
+		pathConfig["daemon.fs.path.backups"] = filepath.Join(profileBackupsDir, dirName)
+	}
+
 	// Daemon logs path
 	if !sess.Settings().Get("daemon.fs.path.logs").IsSet() {
 		pathConfig["daemon.fs.path.logs"] = filepath.Join(profileLogsDir, dirName)
@@ -265,31 +291,23 @@ func (s *Setup) configurePaths(sess session.Register) error {
 		pathConfig["daemon.fs.path.wd"] = filepath.Join(dataPath, "workspace")
 	}
 
-	for k, v := range pathConfig {
-		if err := sess.Settings().Set(k, v); err != nil {
-			return err
-		}
-	}
-
 	// Daemon runtime directory
-	daemonRuntimeDir := filepath.Join(sess.Get("app.fs.path.profile.run").String(), dirName)
-	if err := sess.Opts().Set("daemon.runtime.dir", daemonRuntimeDir); err != nil {
-		return fmt.Errorf("failed to set daemon pidfile path: %w", err)
+	if !sess.Opts().Get("daemon.fs.path.runtime").IsSet() {
+		pathConfig["daemon.fs.path.runtime"] = filepath.Join(sess.Get("app.fs.path.profile.run").String(), dirName)
 	}
 
-	var daemonDirs = []string{
-		"daemon.fs.path.cache",
-		"daemon.fs.path.config",
-		"daemon.fs.path.data",
-		"daemon.fs.path.logs",
-		"daemon.fs.path.state",
-		"daemon.fs.path.wd",
-		"daemon.runtime.dir",
-	}
+	for k, dir := range pathConfig {
+		if k == "daemon.fs.path.runtime" {
+			if err := sess.Opts().Set(k, dir); err != nil {
+				return err
+			}
+		} else {
+			if err := sess.Settings().Set(k, dir); err != nil {
+				return err
+			}
+		}
 
-	for _, dirKey := range daemonDirs {
-		dir := sess.Get(dirKey).String()
-		if stat, err := os.Stat(dir); err != nil {
+		if _, err := os.Stat(dir); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				if err := os.MkdirAll(dir, 0750); err != nil {
 					s.error(sess.Log(), fmt.Sprintf("creating: %s", dir))
@@ -297,8 +315,6 @@ func (s *Setup) configurePaths(sess session.Register) error {
 				}
 				s.debug(sess.Log(), fmt.Sprintf("creating: %s", dir))
 			}
-		} else if !stat.IsDir() {
-			return fmt.Errorf("%w: not a directory: %s", Error, daemonRuntimeDir)
 		}
 	}
 

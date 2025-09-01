@@ -44,8 +44,8 @@ var (
 // used to customize how the daemon starts and runs.
 type Settings struct {
 	// ExternalServices lists external services to be started or stopped by the daemon,
-	// each identified by a string. These services are registered by addons or other
-	// components and cannot be instantiated directly in the daemon setup.
+	// each identified by a service name or address.
+	// These services must be registered by addons or other components.
 	ExternalServices settings.StringSlice
 
 	// InheritedFlags specifies command-line flags passed to the daemon process if

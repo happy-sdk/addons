@@ -39,7 +39,7 @@ type Manager struct {
 
 	cancelSignalHandler context.CancelFunc
 
-	externalServices []string
+	services []string
 
 	busy    atomic.Bool
 	running atomic.Bool
@@ -92,12 +92,11 @@ func (m *Manager) OnReload(action action.WithPrevErr) {
 	m.reloadAction = action
 }
 
-// WithExternalServices registers external services to be started and stopped along with the daemon.
-// Services must be registered elsewhere in the application or by other addons.
-func (m *Manager) WithExternalServices(svcs ...string) {
+// WithServices registers services to be started and stopped along with the daemon.
+func (m *Manager) WithServices(svcs ...string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.externalServices = append(m.externalServices, svcs...)
+	m.services = append(m.services, svcs...)
 }
 
 // CanStart returns true if the daemon can be started.
@@ -293,13 +292,13 @@ func (m *Manager) start(sess *session.Context) error {
 	}
 
 	m.mu.RLock()
-	externalServices := m.externalServices
+	loadServices := m.services
 	startAction := m.startAction
 	args := m.args
 	m.mu.RUnlock()
 
-	if len(externalServices) > 0 {
-		loader := services.NewLoader(sess, externalServices...)
+	if len(loadServices) > 0 {
+		loader := services.NewLoader(sess, loadServices...)
 		<-loader.Load()
 		if err := loader.Err(); err != nil {
 			m.error(sess.Log(), err.Error())
@@ -325,13 +324,13 @@ func (m *Manager) stop(sess *session.Context) error {
 	defer m.running.Store(false)
 
 	m.mu.RLock()
-	externalServices := m.externalServices
+	stopServices := m.services
 	stopAction := m.stopAction
 	m.mu.RUnlock()
 
 	// Collect ServiceInfo pointers upfront.
-	infos := make(map[string]*service.Info, len(externalServices))
-	for _, svc := range externalServices {
+	infos := make(map[string]*service.Info, len(stopServices))
+	for _, svc := range stopServices {
 		info, err := sess.ServiceInfo(svc)
 		if err != nil {
 			m.error(sess.Log(), err.Error())
