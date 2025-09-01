@@ -7,12 +7,13 @@
 package ctl
 
 import (
+	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/happy-sdk/addons/daemon/services/logd"
 	"github.com/happy-sdk/happy/pkg/fsutils/rotatefile"
@@ -20,67 +21,44 @@ import (
 	"github.com/happy-sdk/happy/sdk/session"
 )
 
+// startSingleFork launches daemon using single fork strategy
 func startSingleFork(sess *session.Context, args action.Args) error {
+	logDebug(sess.Log(), "creating single-fork process")
+
+	output, err := setupOutputFile(sess)
+	if err != nil {
+		return err
+	}
+	defer output.Close()
+
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get executable path: %w", err)
+	}
+
+	// Open /dev/null for stdin
 	null, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
 	if err != nil {
-		return fmt.Errorf("%w: failed to open /dev/null", Error)
+		return fmt.Errorf("failed to open /dev/null: %w", err)
 	}
-	defer func() { _ = null.Close() }()
-
-	var (
-		stdout, stderr *os.File = null, null
-	)
-
-	logFileName := sess.Settings().Get("daemon.log.output_file_name").String()
-	if !sess.Settings().Get("daemon.log.disabled").Value().Bool() &&
-		logFileName != "" &&
-		logFileName != "-" {
-
-		outputLogDir := sess.Settings().Get("daemon.fs.path.logs").String()
-		outputLogFilePath := filepath.Join(
-			outputLogDir,
-			logFileName,
-		)
-		outputLastDir := filepath.Join(outputLogDir, logd.OutputArchiveBatchDirName)
-		cleanName := strings.TrimSuffix(logFileName, filepath.Ext(logFileName)) + "_"
-		lfile, err := rotatefile.Open(
-			outputLogFilePath,
-			rotatefile.RotateOnOpen(),
-			rotatefile.RotatedFilePrefix(cleanName),
-			rotatefile.ArchiveDir(outputLastDir, rotatefile.DefaultArchivePerm),
-		)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = lfile.Close() }()
-		fd, err := lfile.OpenFile(os.O_WRONLY | os.O_APPEND)
-		if err != nil {
-			return err
-		}
-		stdout, stderr = fd, fd
-	}
+	defer null.Close()
 
 	procAttr := &os.ProcAttr{
-		Dir: sess.Settings().Get("daemon.fs.path.wd").String(),
-		Env: os.Environ(),
+		Dir:   sess.Settings().Get("daemon.fs.path.wd").String(),
+		Env:   os.Environ(),
+		Files: []*os.File{null, output, output},
 		Sys: &syscall.SysProcAttr{
 			Setsid:     true,
 			Foreground: false,
 			Pgid:       0,
 		},
-		Files: []*os.File{null, stdout, stderr},
-	}
-
-	executable, err := os.Executable()
-	if err != nil {
-		return err
 	}
 
 	forkArgs := buildForkArgs(sess, filepath.Base(executable), args)
 
 	child, err := os.StartProcess(executable, forkArgs, procAttr)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to start daemon process: %w", err)
 	}
 
 	dpid := child.Pid
@@ -89,145 +67,182 @@ func startSingleFork(sess *session.Context, args action.Args) error {
 	}
 
 	if err := sess.Opts().Set("daemon.process.running", true); err != nil {
-		logError(sess.Log(), err.Error())
+		logError(sess.Log(), fmt.Sprintf("failed to set running state: %v", err))
 	}
 
 	if err := sess.Opts().Set("daemon.process.pid", dpid); err != nil {
-		logError(sess.Log(), err.Error())
+		logError(sess.Log(), fmt.Sprintf("failed to set PID: %v", err))
 	}
 
 	logInfo(sess.Log(), fmt.Sprintf("daemon launched with PID: %d", dpid))
-
 	return nil
 }
 
+// startDoubleFork launches daemon using double fork strategy for full detachment
 func startDoubleFork(sess *session.Context, args action.Args) error {
+	logDebug(sess.Log(), "creating launcher process")
 
-	// Get executable path
 	executable, err := os.Executable()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	// First fork
-	logDebug(sess.Log(), "creating launcher")
-
-	firstpid, err := doubleForkLauncherCreate(sess)
+	firstPid, err := doubleForkLauncherCreate(sess)
 	if err != nil {
 		return err
 	}
 
-	// Only Launcher process will have firstpid here
-	if firstpid > 0 {
-		logDebug(sess.Log(), fmt.Sprintf("SYS_WAIT4(%d) waiting launcher to double fork", firstpid))
-		// Parent process: Wait for first child to exit
-		var status syscall.WaitStatus
-		wpid, err := syscall.Wait4(int(firstpid), &status, 0, nil)
-		if err != nil {
-			e := fmt.Errorf("%w: failed to wait for first child: %v", Error, err)
-			logError(sess.Log(), e.Error())
-			return e
-		}
-		if es := status.ExitStatus(); es != 0 {
-			return fmt.Errorf("launcher process exited(%d)", es)
+	// Parent process - wait for launcher to complete
+	if firstPid > 0 {
+		logDebug(sess.Log(), fmt.Sprintf("waiting for launcher PID %d", firstPid))
+
+		if err := waitForChild(firstPid, 30*time.Second); err != nil {
+			return fmt.Errorf("launcher process failed: %w", err)
 		}
 
-		logInfo(sess.Log(),
-			"launcher exited with success",
-			slog.Int("pid", int(wpid)),
-		)
+		logInfo(sess.Log(), "daemon launched successfully via double fork")
 		return nil
 	}
 
-	// temporary fork
+	// Launcher process - perform second fork and exec
 	forkArgs := buildForkArgs(sess, filepath.Base(executable), args)
+
 	dpid, err := doubleForkLauncherRun(sess, executable, forkArgs)
 	if err != nil {
-		logError(sess.Log(), err.Error())
+		logError(sess.Log(), fmt.Sprintf("failed to launch daemon: %v", err))
 		os.Exit(1)
 	}
-	logDebug(sess.Log(), fmt.Sprintf("daemon process created PID(%d)", dpid))
+
+	logDebug(sess.Log(), fmt.Sprintf("daemon process created with PID %d", dpid))
 	os.Exit(0)
 
 	return nil
 }
 
+// setupOutputFile configures stdout/stderr redirection for daemon
+func setupOutputFile(sess *session.Context) (*os.File, error) {
+	// If logging is disabled or no log file specified, use /dev/null
+	outputFileName := sess.Settings().Get("daemon.log.output_file_name").String()
+	if sess.Settings().Get("daemon.log.disabled").Value().Bool() ||
+		outputFileName == "" ||
+		outputFileName == "-" {
+
+		null, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+		if err != nil {
+			return nil, fmt.Errorf("%w: failed to open /dev/null", Error)
+		}
+		return null, nil
+	}
+
+	// Setup log file with rotation
+	outputLogDir := sess.Settings().Get("daemon.fs.path.logs").String()
+	outputLogFilePath := filepath.Join(outputLogDir, outputFileName)
+	outputArchiveDir := filepath.Join(outputLogDir, logd.OutputArchiveBatchDirName)
+	cleanName := strings.TrimSuffix(outputFileName, filepath.Ext(outputFileName)) + "_"
+
+	var ropts = []rotatefile.Option{
+		rotatefile.RotatedFilePrefix(cleanName),
+		rotatefile.ArchiveDir(outputArchiveDir, rotatefile.DefaultArchivePerm),
+	}
+
+	if !sess.Settings().Get("daemon.log.startup_rotation_disabled").Value().Bool() {
+		ropts = append(ropts, rotatefile.RotateOnOpen())
+	}
+
+	lfile, err := rotatefile.Open(outputLogFilePath, ropts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open log file: %w", err)
+	}
+	defer lfile.Close()
+
+	fd, err := lfile.OpenFile(os.O_WRONLY | os.O_APPEND | os.O_CREATE)
+	if err != nil {
+		lfile.Close()
+		return nil, fmt.Errorf("failed to open log file descriptor: %w", err)
+	}
+
+	return fd, nil
+}
+
+// doubleForkLauncherCreate performs the first fork
 func doubleForkLauncherCreate(sess *session.Context) (int, error) {
-	firstpid, _, errno := syscall.Syscall(syscall.SYS_FORK, 0, 0, 0)
+	firstPid, _, errno := syscall.Syscall(syscall.SYS_FORK, 0, 0, 0)
 	if errno != 0 {
 		return 0, fmt.Errorf("%w: first fork failed: %v", Error, errno)
 	}
-	return int(firstpid), nil
+
+	logDebug(sess.Log(), fmt.Sprintf("created launcher with PID %d", firstPid))
+	return int(firstPid), nil
 }
 
 func doubleForkLauncherRun(sess *session.Context, executable string, args []string) (int, error) {
-	// First child: Create new session
+	// Create new session (detach from controlling terminal)
 	if _, err := syscall.Setsid(); err != nil {
 		return 0, fmt.Errorf("%w: setsid failed: %v", Error, err)
 	}
 
-	// Open /dev/null for stdin/stdout/stderr redirection
-	null, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+	output, err := setupOutputFile(sess)
 	if err != nil {
 		return 0, err
 	}
-	defer func() {
-		_ = null.Close()
-	}()
+	defer output.Close()
 
-	var (
-		stdout, stderr *os.File = null, null
-	)
-
-	logFileName := sess.Settings().Get("daemon.log.output_file_name").String()
-	if !sess.Settings().Get("daemon.log.disabled").Value().Bool() &&
-		logFileName != "" &&
-		logFileName != "-" {
-
-		outputLogDir := sess.Settings().Get("daemon.fs.path.logs").String()
-		outputLogFilePath := filepath.Join(
-			outputLogDir,
-			logFileName,
-		)
-		outputLastDir := filepath.Join(outputLogDir, logd.OutputArchiveBatchDirName)
-		cleanName := strings.TrimSuffix(logFileName, filepath.Ext(logFileName)) + "_"
-		lfile, err := rotatefile.Open(
-			outputLogFilePath,
-			rotatefile.RotateOnOpen(),
-			rotatefile.RotatedFilePrefix(cleanName),
-			rotatefile.ArchiveDir(outputLastDir, rotatefile.DefaultArchivePerm),
-		)
-		if err != nil {
-			return 0, err
-		}
-		defer func() { _ = lfile.Close() }()
-		fd, err := lfile.OpenFile(os.O_WRONLY | os.O_APPEND)
-		if err != nil {
-			return 0, err
-		}
-		stdout, stderr = fd, fd
+	// Open /dev/null for stdin
+	null, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open /dev/null: %w", err)
 	}
+	defer null.Close()
 
-	// Setup for ForkExec
+	// Setup process attributes for second fork
 	procAttr := &syscall.ProcAttr{
-		Dir: sess.Get("daemon.wd").String(),
+		Dir: sess.Settings().Get("daemon.fs.path.wd").String(),
 		Env: os.Environ(),
 		Files: []uintptr{
 			null.Fd(),
-			stdout.Fd(),
-			stderr.Fd(),
+			output.Fd(),
+			output.Fd(),
 		},
 		Sys: &syscall.SysProcAttr{
-			Setsid:     true,
-			Foreground: false,
-			Pgid:       0,
+			Setsid:     true,  // Create new session
+			Foreground: false, // Run in background
+			Pgid:       0,     // New process group
 		},
 	}
 
-	// ForkExec (second fork and exec)
+	// Perform second fork and exec
 	dpid, err := syscall.ForkExec(executable, args, procAttr)
 	if err != nil {
-		return dpid, fmt.Errorf("%w: forkexec failed: %v", Error, err)
+		return 0, fmt.Errorf("%w: forkexec failed: %v", Error, err)
 	}
+
 	return dpid, nil
+}
+
+// waitForChild waits for child process
+func waitForChild(pid int, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		var status syscall.WaitStatus
+		_, err := syscall.Wait4(pid, &status, 0, nil)
+		if err != nil {
+			done <- fmt.Errorf("wait4 failed: %w", err)
+			return
+		}
+		if es := status.ExitStatus(); es != 0 {
+			done <- fmt.Errorf("child process exited with status %d", es)
+			return
+		}
+		done <- nil
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("timeout waiting for child process")
+	}
 }
