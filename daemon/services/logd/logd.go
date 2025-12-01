@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	ServiceName               = "daemon-logd"
+	ServiceSlug               = "daemon-logd"
 	OutputArchiveBatchDirName = "last_outputs"
 	OutputArchiveDirName      = "output_archives"
 	LogArchiveBatchDirName    = "last_logs"
@@ -32,7 +32,7 @@ const (
 )
 
 var (
-	Error = fmt.Errorf(ServiceName)
+	Error = fmt.Errorf(ServiceSlug)
 )
 
 // Settings defines the configuration for the daemon's logging service, managing
@@ -124,7 +124,7 @@ func Options() []*options.OptionSpec {
 	}
 }
 
-func DaemonLog(logger logging.Logger, lvl logging.Level, label string, pid int64, msg string, args ...slog.Attr) {
+func DaemonLog(logger *logging.Logger, lvl logging.Level, label string, pid int64, msg string, args ...slog.Attr) {
 	args = append(args, slog.Group("daemon",
 		slog.String("label", label),
 		slog.Int64("pid", pid),

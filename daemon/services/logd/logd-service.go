@@ -26,8 +26,9 @@ import (
 
 func (l *Logger) Service() *services.Service {
 	svc := services.New(service.Config{
-		Name:          ServiceName,
-		Description:   "Daemon loging management service",
+		Slug:          ServiceSlug,
+		Name:          "Daemon Logging Service",
+		Description:   "Daemon Logging management service",
 		RetryOnError:  false,
 		MaxRetries:    0,
 		RetryBackoff:  settings.Duration(5 * time.Second),
@@ -62,18 +63,18 @@ func (l *Logger) onRegister(svc *services.Service) action.Action {
 			return fmt.Errorf("failed to set daemon output file path: %w", err)
 		}
 
-		info, err := sess.ServiceInfo(ServiceName)
+		info, err := sess.ServiceInfo(ServiceSlug)
 		if err != nil {
 			return err
 		}
 
 		l.mu.RLock()
 		defer l.mu.RUnlock()
-		l.state.UpdateLogger(func(ls *telemetry.LoggerState) {
+		l.tel.UpdateLogger(func(ls *telemetry.Logger) {
 			ls.Service.Name = info.Name()
+			ls.Service.Slug = info.Slug()
 			ls.Service.Addr = info.Addr().String()
 			ls.Service.Errors = info.Errs()
-			ls.Service.StartedAt = info.StartedAt()
 			ls.Service.Status = telemetry.ServiceStatusStopped
 		})
 
@@ -161,11 +162,13 @@ func (l *Logger) onRegister(svc *services.Service) action.Action {
 			// Log Telemetry
 			schedule.Job("log telemetry update", "@every 2s", func(sess *session.Context) error {
 				l.mu.RLock()
-				state := l.state
+				tel := l.tel
 				atel := l.atel
+				file := l.file
 				l.mu.RUnlock()
 
-				state.UpdateLogger(func(ls *telemetry.LoggerState) {
+				tel.UpdateLogger(func(ls *telemetry.Logger) {
+					ls.Rotations = int64(file.Rotations())
 					ls.LevelHappy = atel.LevelHappy.Load()
 					ls.LevelHappyInit = atel.LevelHappyInit.Load()
 					ls.LevelDebug = atel.LevelDebug.Load()
@@ -173,13 +176,13 @@ func (l *Logger) onRegister(svc *services.Service) action.Action {
 					ls.LevelOk = atel.LevelOk.Load()
 					ls.LevelNotice = atel.LevelNotice.Load()
 					ls.LevelWarn = atel.LevelWarn.Load()
-					ls.LevelDeprecated = atel.LevelDeprecated.Load()
+					ls.LevelDepr = atel.LevelDepr.Load()
 					ls.LevelError = atel.LevelError.Load()
 					ls.LevelBUG = atel.LevelBUG.Load()
-					ls.LevelAlways = atel.LevelAlways.Load()
+					ls.LevelOut = atel.LevelOut.Load()
 					ls.Total = atel.Total.Load()
 				})
-
+				file = nil
 				return nil
 			})
 		})
@@ -190,25 +193,25 @@ func (l *Logger) onRegister(svc *services.Service) action.Action {
 }
 
 func (l *Logger) onStart(sess *session.Context) (err error) {
-	startedAt := time.Now()
 
 	defer func() {
 		l.handleStateDeferError(sess, err)
+		l.statsUpdateLoggerFsStats(sess)
 	}()
 
 	l.mu.Lock()
 
-	state := l.state
+	tel := l.tel
 
 	if sess.Settings().Get("daemon.log.disabled").Value().Bool() {
-		state.UpdateLogger(func(ls *telemetry.LoggerState) {
+		tel.UpdateLogger(func(ls *telemetry.Logger) {
 			ls.Service.Status = telemetry.ServiceStatusDisabled
 		})
 		l.mu.Unlock()
 		return fmt.Errorf("%w: logger service is disabled", Error)
 	}
 
-	state.UpdateLogger(func(ls *telemetry.LoggerState) {
+	tel.UpdateLogger(func(ls *telemetry.Logger) {
 		ls.Service.Status = telemetry.ServiceStatusStarting
 	})
 
@@ -235,36 +238,26 @@ func (l *Logger) onStart(sess *session.Context) (err error) {
 		return err
 	}
 
-	adapter, err := NewAdapter(sess, l.file, l.atel)
-	if err != nil {
-		l.mu.Unlock()
-		return err
-	}
+	// adapter, err := NewAdapter(sess, l.file, l.atel)
+	// if err != nil {
+	// 	l.mu.Unlock()
+	// 	return err
+	// }
 
 	switch sess.Get("daemon.process.spawn_strategy").String() {
 	case "foreground":
-		if err := sess.Log().AttachAdapter(adapter); err != nil {
-			l.mu.Unlock()
-			return err
-		}
+		panic("not implemented")
+		// if err := sess.Log().AttachAdapter(adapter); err != nil {
+		// 	l.mu.Unlock()
+		// 	return err
+		// }
 	case "daemon":
-		if err := sess.Log().SetAdapter(adapter); err != nil {
-			l.mu.Unlock()
-			return err
-		}
+		panic("not implemented")
+		// if err := sess.Log().SetAdapter(adapter); err != nil {
+		// 	l.mu.Unlock()
+		// 	return err
+		// }
 	}
-
-	state.UpdateLogger(func(ls *telemetry.LoggerState) {
-		ls.Service.Status = telemetry.ServiceStatusRunning
-		ls.Service.StartUpTook = time.Since(startedAt)
-	})
-
-	took := state.Logger().Service.StartUpTook
-	l.ok(
-		sess.Log(),
-		fmt.Sprintf("%s logger service started %s", sess.Get("app.slug"), took),
-		slog.Duration("took", took),
-	)
 
 	l.mu.Unlock()
 
@@ -282,8 +275,28 @@ func (l *Logger) onStart(sess *session.Context) (err error) {
 		if err := l.cronOutputArchiveSchedule(sess); err != nil {
 			return err
 		}
+
 	}
 
+	took := tel.Logger().Service.StartUpTook
+	l.ok(
+		sess.Log(),
+		fmt.Sprintf("%s logger service started %s", sess.Get("app.slug"), took),
+		slog.Duration("took", took),
+	)
+
+	info, err := sess.ServiceInfo(ServiceSlug)
+	if err != nil {
+		return err
+	}
+
+	tel.UpdateLogger(func(ls *telemetry.Logger) {
+		ls.Service.Status = telemetry.ServiceStatusRunning
+		startedAt := info.StartedAt()
+		ls.Service.StartedAt = startedAt
+		ls.Service.Errors = info.Errs()
+		ls.Service.StartUpTook = time.Since(startedAt)
+	})
 	return nil
 }
 
@@ -298,9 +311,9 @@ func (l *Logger) onStop(sess *session.Context, err error) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	state := l.state
+	tel := l.tel
 
-	state.UpdateLogger(func(ls *telemetry.LoggerState) {
+	tel.UpdateLogger(func(ls *telemetry.Logger) {
 		ls.Service.Status = telemetry.ServiceStatusStopping
 	})
 
@@ -315,7 +328,7 @@ wait:
 	for {
 		select {
 		case <-timer.C:
-			pmStatus := state.ProcessManager().Service.Status
+			pmStatus := tel.Process().Service.Status
 			if pmStatus == telemetry.ServiceStatusStopped {
 				break wait
 			}
@@ -325,7 +338,7 @@ wait:
 		}
 	}
 
-	state.UpdateLogger(func(ls *telemetry.LoggerState) {
+	tel.UpdateLogger(func(ls *telemetry.Logger) {
 		ls.Service.Status = telemetry.ServiceStatusStopped
 		ls.Service.StoppedAt = time.Now()
 		ls.NextRotation = time.Time{}
@@ -337,10 +350,10 @@ wait:
 
 func (l *Logger) handleStateDeferError(sess *session.Context, err error) {
 	l.mu.RLock()
-	state := l.state
+	tel := l.tel
 	l.mu.RUnlock()
-	state.UpdateLogger(func(ls *telemetry.LoggerState) {
-		info, infoErr := sess.ServiceInfo(ServiceName)
+	tel.UpdateLogger(func(ls *telemetry.Logger) {
+		info, infoErr := sess.ServiceInfo(ServiceSlug)
 		if infoErr != nil {
 			ls.AddError(infoErr)
 			return

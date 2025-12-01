@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package v1.wire;
+
+message Frame {
+  uint32 metadata_length = 1; // length of encrypted header
+  Metadata metadata = 2; // encrypted: frame metadata
+  optional bytes payload = 3; // encrypted: actual Request/Response
+
+  message Metadata {
+    Kind kind = 1; // Frame type
+  }
+
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_PING = 1;      // Control frame - keepalive request
+    KIND_PONG = 2;      // Control frame - keepalive response
+    KIND_ACK = 3;       // Control frame - acknowledgment (minimal payload)
+    KIND_ERROR = 4;     // Control frame - errors (minimal payload)
+    KIND_HANDSHAKE = 5; // Key exchange/session establishment
+    KIND_REQUEST = 6;   // Contains Request protobuf
+    KIND_RESPONSE = 7;  // Contains Response protobuf (full response)
+    KIND_STREAM = 8;    // Contains StreamMessage protobuf
+  }
+}

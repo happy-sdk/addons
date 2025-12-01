@@ -22,7 +22,7 @@ import (
 	"github.com/happy-sdk/happy/sdk/session"
 )
 
-const ServiceName = "daemon-process"
+const ServiceSlug = "daemon-process"
 
 var GlobalFlags = settings.StringSlice{
 	"show-exec",
@@ -32,7 +32,7 @@ var GlobalFlags = settings.StringSlice{
 }
 
 var (
-	Error                   = fmt.Errorf(ServiceName)
+	Error                   = fmt.Errorf(ServiceSlug)
 	ErrAlreadyRunning       = fmt.Errorf("%w already running", Error)
 	ErrNotRunning           = fmt.Errorf("%w not running", Error)
 	ErrDaemonNotRunning     = errors.New("daemon not running")
@@ -168,7 +168,7 @@ func Start(sess *session.Context, args action.Args) error {
 		return startForeground(sess, args)
 	}
 
-	return fmt.Errorf("%w: can not start %s with %s strategy", Error, ServiceName, spawnStrategy)
+	return fmt.Errorf("%w: can not start %s with %s strategy", Error, ServiceSlug, spawnStrategy)
 }
 
 var daemonArgs sync.Map
@@ -192,20 +192,20 @@ func startForeground(sess *session.Context, args action.Args) error {
 	loader := services.NewLoader(sess, "daemon-process")
 	<-loader.Load()
 	if err := loader.Err(); err != nil {
-		logError(sess.Log(), err.Error())
+		err := fmt.Errorf("%w: failed to start daemon %s", Error, err.Error())
 		daemonArgs.Clear()
-		return fmt.Errorf("%w: failed to start daemon", Error)
+		return err
 	}
 
 	return nil
 }
 
-func logDebug(logger logging.Logger, msg string, args ...slog.Attr) {
+func logDebug(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := os.Getpid()
-	logd.DaemonLog(logger, logging.LevelDebug, ServiceName, int64(pid), msg, args...)
+	logd.DaemonLog(logger, logging.LevelDebug, ServiceSlug, int64(pid), msg, args...)
 }
 
-func logError(logger logging.Logger, msg string, args ...slog.Attr) {
+func logError(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := os.Getpid()
-	logd.DaemonLog(logger, logging.LevelError, ServiceName, int64(pid), msg, args...)
+	logd.DaemonLog(logger, logging.LevelError, ServiceSlug, int64(pid), msg, args...)
 }

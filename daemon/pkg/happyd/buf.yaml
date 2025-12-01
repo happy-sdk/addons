@@ -1,0 +1,16 @@
+# For details on buf.yaml configuration, visit https://buf.build/docs/configuration/v2/buf-yaml
+# buf.yaml
+version: v2
+modules:
+  - path: proto
+    name: buf.build/happy-sdk/happyd
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_VERSION_SUFFIX
+breaking:
+  use:
+    - PACKAGE
+  except:
+    - v1

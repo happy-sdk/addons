@@ -35,7 +35,7 @@ type Manager struct {
 	stopAction   action.WithPrevErr
 	reloadAction action.WithPrevErr
 
-	state *telemetry.DaemonState
+	tel *telemetry.Telemetry
 
 	cancelSignalHandler context.CancelFunc
 
@@ -47,14 +47,14 @@ type Manager struct {
 	args action.Args
 }
 
-func New(state *telemetry.DaemonState) *Manager {
+func New(tel *telemetry.Telemetry) *Manager {
 	pid := os.Getpid()
-	state.UpdateProcessManager(func(pms *telemetry.ProcessManagerState) {
-		pms.PID = pid
+	tel.UpdateProcess(func(pms *telemetry.Process) {
+		pms.PID = int64(pid)
 	})
 
 	m := &Manager{
-		state: state,
+		tel: tel,
 	}
 
 	m.pid.Store(int64(pid))
@@ -195,6 +195,9 @@ func (m *Manager) pidfileRemove(sess *session.Context) error {
 }
 
 func (m *Manager) osSignalHandler(sess *session.Context) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	spawnStrategy := sess.Settings().Get("daemon.process.spawn_strategy").String()
 	if spawnStrategy != Foreground.String() {
 		sess.Release()
@@ -415,39 +418,39 @@ func (m *Manager) reload(sess *session.Context) {
 		}
 	}
 
-	sess.Log().NotImplemented("Manager.reload -> stop")
-	sess.Log().NotImplemented("Manager.reload -> start")
+	sess.Log().Log(sess.Context(), logging.LevelNotImpl.Level(), "Manager.reload -> stop")
+	sess.Log().Log(sess.Context(), logging.LevelNotImpl.Level(), "Manager.reload -> start")
 
 	m.mu.Unlock()
 	m.busy.Store(false)
 }
 
-func (m *Manager) debug(logger logging.Logger, msg string, args ...slog.Attr) {
+func (m *Manager) debug(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := m.pid.Load()
-	logd.DaemonLog(logger, logging.LevelDebug, ServiceName, pid, msg, args...)
+	logd.DaemonLog(logger, logging.LevelDebug, ServiceSlug, pid, msg, args...)
 }
 
-func (m *Manager) info(logger logging.Logger, msg string, args ...slog.Attr) {
+func (m *Manager) info(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := m.pid.Load()
-	logd.DaemonLog(logger, logging.LevelInfo, ServiceName, pid, msg, args...)
+	logd.DaemonLog(logger, logging.LevelInfo, ServiceSlug, pid, msg, args...)
 }
 
-func (m *Manager) ok(logger logging.Logger, msg string, args ...slog.Attr) {
+func (m *Manager) ok(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := m.pid.Load()
-	logd.DaemonLog(logger, logging.LevelOk, ServiceName, pid, msg, args...)
+	logd.DaemonLog(logger, logging.LevelSuccess, ServiceSlug, pid, msg, args...)
 }
 
-func (m *Manager) warn(logger logging.Logger, msg string, args ...slog.Attr) {
+func (m *Manager) warn(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := m.pid.Load()
-	logd.DaemonLog(logger, logging.LevelWarn, ServiceName, pid, msg, args...)
+	logd.DaemonLog(logger, logging.LevelWarn, ServiceSlug, pid, msg, args...)
 }
 
-func (m *Manager) notice(logger logging.Logger, msg string, args ...slog.Attr) {
+func (m *Manager) notice(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := m.pid.Load()
-	logd.DaemonLog(logger, logging.LevelNotice, ServiceName, pid, msg, args...)
+	logd.DaemonLog(logger, logging.LevelNotice, ServiceSlug, pid, msg, args...)
 }
 
-func (m *Manager) error(logger logging.Logger, msg string, args ...slog.Attr) {
+func (m *Manager) error(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := m.pid.Load()
-	logd.DaemonLog(logger, logging.LevelError, ServiceName, pid, msg, args...)
+	logd.DaemonLog(logger, logging.LevelError, ServiceSlug, pid, msg, args...)
 }

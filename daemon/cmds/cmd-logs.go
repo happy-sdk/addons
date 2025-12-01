@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -22,12 +21,11 @@ import (
 	"github.com/happy-sdk/happy/pkg/fsutils"
 	"github.com/happy-sdk/happy/pkg/fsutils/rotatefile"
 	"github.com/happy-sdk/happy/pkg/logging"
-	"github.com/happy-sdk/happy/pkg/logging/adapters/console"
+	"github.com/happy-sdk/happy/pkg/logging/adapters"
 	"github.com/happy-sdk/happy/pkg/scheduling/cron"
 	"github.com/happy-sdk/happy/pkg/settings"
 	"github.com/happy-sdk/happy/pkg/strings/humanize"
 	"github.com/happy-sdk/happy/pkg/strings/textfmt"
-	"github.com/happy-sdk/happy/pkg/tui/ansicolor"
 	"github.com/happy-sdk/happy/sdk/action"
 	"github.com/happy-sdk/happy/sdk/cli"
 	"github.com/happy-sdk/happy/sdk/cli/command"
@@ -81,7 +79,7 @@ func logsBackup() *command.Command {
 			totalSize += outputArchiveBatchDirSize
 		}
 		if totalSize == 0 {
-			sess.Log().Notice("no logs to backup")
+			sess.Log().Log(sess.Context(), logging.LevelNotice.Level(), "no logs to backup")
 			return nil
 		}
 
@@ -122,7 +120,7 @@ func logsBackup() *command.Command {
 		if err != nil {
 			return err
 		}
-		sess.Log().Ok(fmt.Sprintf(
+		sess.Log().Log(sess.Context(), logging.LevelSuccess.Level(), fmt.Sprintf(
 			"created archive %s %s from %s of log files",
 			stat.Name,
 			bytesize.SISize(stat.Size).String(),
@@ -345,7 +343,7 @@ func logStatFileInfoTable(sess *session.Context, args action.Args, logdir string
 
 func logsTail() *command.Command {
 	cmd := command.New("tail", command.Config{
-		Description: "Display the last lines of the log file",
+		Description: "Display the last lines of the log or output file",
 	})
 
 	cmd.WithFlags(
@@ -375,25 +373,26 @@ func logsTail() *command.Command {
 		// Allow user to cancel with Ctrl-C
 		sess.Wait(false)
 
-		opts, err := sess.Log().Options()
-		if err != nil {
-			return err
-		}
-		opts.LevelVar = nil
-		opts.SetSlogOutput = false
-		opts.Level = math.MinInt
-		if args.Flag("level").Present() {
-			opts.Level, _ = logging.LevelFromString(args.Flag("level").String())
-		}
-		opts.AddSource = false
+		// opts, err := sess.Log().Options()
+		// if err != nil {
+		// 	return err
+		// }
+		// opts.LevelVar = nil
+		// opts.SetSlogOutput = false
+		// opts.Level = math.MinInt
+		// if args.Flag("level").Present() {
+		// 	opts.Level, _ = logging.LevelFromString(args.Flag("level").String())
+		// }
+		// opts.AddSource = false
 
-		logger := console.NewHandler(
-			sess.Context(),
-			os.Stdout,
-			opts,
-			ansicolor.New(),
+		logger := logging.New(
+			logging.DefaultConfig(),
+			adapters.NewBufferedConsoleAdapter(
+				os.Stdout,
+				adapters.ConsoleAdapterDefaultTheme(),
+			),
 		)
-
+		timestampFormat := logging.DefaultConfig().TimeFormat
 		// Tail and follow the log file
 		if args.Flag("follow").Var().Bool() {
 			ctx, cancel := context.WithCancel(sess.Context())
@@ -419,7 +418,7 @@ func logsTail() *command.Command {
 					sess.Log().Error(fmt.Sprintf("TAIL FILE: %s", err.Error()))
 					break
 				}
-				logPrintln(ctx, logger, opts.TimestampFormat, line)
+				logPrintln(ctx, logger, timestampFormat, line)
 			}
 			return nil
 		}
@@ -439,7 +438,7 @@ func logsTail() *command.Command {
 				break
 			}
 			seen++
-			logPrintln(ctx, logger, opts.TimestampFormat, line)
+			logPrintln(ctx, logger, timestampFormat, line)
 			if seen == end {
 				cancel()
 				break
@@ -457,7 +456,7 @@ func logsTail() *command.Command {
 
 type entry map[string]any
 
-func logPrintln(ctx context.Context, logger *console.Handler, tsFormat string, line string) {
+func logPrintln(ctx context.Context, logger *logging.Logger, tsFormat string, line string) {
 	if !strings.HasPrefix(line, "{") {
 		fmt.Println(line)
 		return
@@ -515,5 +514,5 @@ func logPrintln(ctx context.Context, logger *console.Handler, tsFormat string, l
 		r.Add(k, v)
 	}
 
-	logger.Handle(ctx, r)
+	logger.Handler().Handle(ctx, r)
 }

@@ -5,119 +5,235 @@
 package telemetry
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/happy-sdk/happy/pkg/bytesize"
+	"github.com/happy-sdk/happy/pkg/version"
+	"github.com/happy-sdk/happy/sdk/session"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
-type ServiceStatus int8
-
-const (
-	ServiceStatusUnknown ServiceStatus = iota
-	ServiceStatusDisabled
-	ServiceStatusIdle
-	ServiceStatusStarting
-	ServiceStatusRestarting
-	ServiceStatusRunning
-	ServiceStatusStopping
-	ServiceStatusStopped
-	ServiceStatusFailed
+var (
+	Error = errors.New("telemetry")
 )
 
-type ServiceState struct {
-	Name        string
-	Addr        string
-	Errors      map[time.Time]error
-	StartedAt   time.Time
-	StartUpTook time.Duration
-	StoppedAt   time.Time
-	Status      ServiceStatus
+type Setup func(sess *session.Context, res *resource.Resource) (p metric.MeterProvider, err error)
+
+// Telemetry holds global telemetry collection.
+type Telemetry struct {
+	mu       sync.RWMutex
+	disabled atomic.Bool
+	setup    Setup
+	provider metric.MeterProvider
+
+	process Process
+	logger  Logger
 }
 
-// DaemonState holds global daemon state.
-type DaemonState struct {
-	mu             sync.RWMutex
-	processManager ProcessManagerState
-	logger         LoggerState
+// Telemetry initializes a new DaemonState.
+func New() *Telemetry {
+	return &Telemetry{}
 }
 
-// NewDaemonState initializes a new DaemonState.
-func NewDaemonState() *DaemonState {
-	return &DaemonState{}
-}
-
-// ProcessManagerState holds process-manager state and telemetry.
-type ProcessManagerState struct {
-	PID       int
-	UpdatedAt time.Time
-	Service   ServiceState
-	Busy      bool
-}
-
-func (s *ProcessManagerState) AddError(err error) {
-	if s.Service.Errors == nil {
-		s.Service.Errors = make(map[time.Time]error)
+func (t *Telemetry) Setup(setup Setup) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.setup != nil {
+		return
 	}
-	s.Service.Errors[time.Now()] = err
+	t.setup = setup
 }
 
-// UpdateProcessManager applies f to the process-manager state under write lock.
-func (s *DaemonState) UpdateProcessManager(f func(*ProcessManagerState)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	f(&s.processManager)
-	s.processManager.UpdatedAt = time.Now()
-}
+func (t *Telemetry) Start(sess *session.Context) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
-// ProcessManager returns a copy of the state under read lock.
-func (s *DaemonState) ProcessManager() ProcessManagerState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.processManager
-}
-
-type LoggerState struct {
-	PID          int
-	UpdatedAt    time.Time
-	Service      ServiceState
-	NextRotation time.Time
-	Rotations    int
-	DirSize      bytesize.SISize
-
-	LevelHappy          uint64
-	LevelHappyInit      uint64
-	LevelDebug          uint64
-	LevelInfo           uint64
-	LevelOk             uint64
-	LevelNotice         uint64
-	LevelNotImplemented uint64
-	LevelWarn           uint64
-	LevelDeprecated     uint64
-	LevelError          uint64
-	LevelBUG            uint64
-	LevelAlways         uint64
-	Total               uint64
-}
-
-func (s *LoggerState) AddError(err error) {
-	if s.Service.Errors == nil {
-		s.Service.Errors = make(map[time.Time]error)
+	if t.disabled.Load() || t.setup == nil {
+		sess.Log().Debug("telemetry disabled no provider")
+		t.disabled.Store(true)
+		return nil
 	}
-	s.Service.Errors[time.Now()] = err
+
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceName(sess.Get("app.name").String()),
+		semconv.ServiceVersion(sess.Get("app.version").String()),
+		semconv.ServiceNamespace(sess.Get("app.slug").String()),
+		semconv.ServiceInstanceID(sess.Get("app.instance.id").String()),
+		semconv.DeploymentEnvironment(sess.Get("app.profile.name").String()),
+	)
+
+	var ver version.Version
+	bi, _ := debug.ReadBuildInfo()
+	for _, dep := range bi.Deps {
+		if dep.Path != "github.com/happy-sdk/addons/daemon" {
+			continue
+		}
+		var err error
+		ver, err = version.Parse(dep.Version)
+		if err != nil {
+			ver = "v0.0.1"
+		}
+	}
+
+	provider, err := t.setup(sess, res)
+	if err != nil {
+		return err
+	}
+
+	if err := t.process.otelConfigure(sess.Context(), t,
+		provider.Meter(
+			t.process.Service.Slug,
+			metric.WithSchemaURL(semconv.SchemaURL),
+			metric.WithInstrumentationVersion(ver.String()),
+		)); err != nil {
+		return err
+	}
+	if err := t.logger.otelConfigure(sess.Context(), t,
+		provider.Meter(
+			t.logger.Service.Slug,
+			metric.WithSchemaURL(semconv.SchemaURL),
+			metric.WithInstrumentationVersion(ver.String()),
+		)); err != nil {
+		return err
+	}
+	t.provider = provider
+	t.setup = nil
+	return nil
 }
 
-// UpdateLogger applies f to the Logger state under write lock.
-func (s *DaemonState) UpdateLogger(f func(*LoggerState)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	f(&s.logger)
-	s.logger.UpdatedAt = time.Now()
+func (t *Telemetry) Stop(sess *session.Context) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.disabled.Load() || t.provider == nil {
+		return nil
+	}
+	if shutdownable, ok := t.provider.(interface{ Shutdown(context.Context) error }); ok {
+		if err := shutdownable.Shutdown(context.Background()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// Logger returns a copy of the Logger state under read lock.
-func (s *DaemonState) Logger() LoggerState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.logger
+// Snapshot returns the current state as a Snapshot.
+func (t *Telemetry) Snapshot(ctx context.Context) (Snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return Snapshot{}, err
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if !t.disabled.Load() && t.provider != nil {
+		if err := t.process.otelUpdate(ctx); err != nil {
+			return Snapshot{}, err
+		}
+		if err := t.logger.otelUpdate(ctx); err != nil {
+			return Snapshot{}, err
+		}
+	}
+
+	snapshot := Snapshot{
+		Process:   t.process,
+		Logger:    t.logger,
+		Timestamp: time.Now(),
+	}
+
+	return snapshot, nil
+}
+
+type otelMetricConfig struct {
+	name                      string
+	description               string
+	unit                      string
+	int64CounterPtr           *metric.Int64Counter
+	int64GaugePtr             *metric.Int64Gauge
+	int64ObservableCounterPtr *metric.Int64ObservableCounter
+	int64ObservableGaugePtr   *metric.Int64ObservableGauge
+	int64Histogram            *metric.Int64Histogram
+	float64ObservableGaugePtr *metric.Float64ObservableGauge
+	millisecondsHistogramPtr  *metric.Float64Histogram
+}
+
+func (t *Telemetry) otelConfigure(meter metric.Meter, cnfs []otelMetricConfig) (instruments []metric.Observable, err error) {
+	for _, cfg := range cnfs {
+
+		if cfg.int64GaugePtr != nil {
+			inst, err := meter.Int64Gauge(
+				cfg.name,
+				metric.WithDescription(cfg.description),
+				metric.WithUnit(cfg.unit),
+			)
+			if err != nil {
+				return nil, err
+			}
+			*cfg.int64GaugePtr = inst
+		} else if cfg.int64CounterPtr != nil {
+			inst, err := meter.Int64Counter(
+				cfg.name,
+				metric.WithDescription(cfg.description),
+				metric.WithUnit(cfg.unit),
+			)
+			if err != nil {
+				return nil, err
+			}
+			*cfg.int64CounterPtr = inst
+		} else if cfg.int64ObservableCounterPtr != nil {
+			inst, err := meter.Int64ObservableCounter(
+				cfg.name,
+				metric.WithDescription(cfg.description),
+				metric.WithUnit(cfg.unit),
+			)
+			if err != nil {
+				return nil, err
+			}
+			*cfg.int64ObservableCounterPtr = inst
+			instruments = append(instruments, inst)
+		} else if cfg.int64ObservableGaugePtr != nil {
+			inst, err := meter.Int64ObservableGauge(
+				cfg.name,
+				metric.WithDescription(cfg.description),
+				metric.WithUnit(cfg.unit),
+			)
+			if err != nil {
+				return nil, err
+			}
+			*cfg.int64ObservableGaugePtr = inst
+			instruments = append(instruments, inst)
+		} else if cfg.float64ObservableGaugePtr != nil {
+			inst, err := meter.Float64ObservableGauge(
+				cfg.name,
+				metric.WithDescription(cfg.description),
+				metric.WithUnit(cfg.unit),
+			)
+			if err != nil {
+				return nil, err
+			}
+			*cfg.float64ObservableGaugePtr = inst
+			instruments = append(instruments, inst)
+		} else if cfg.millisecondsHistogramPtr != nil {
+			histogram, err := meter.Float64Histogram(
+				cfg.name,
+				metric.WithDescription(cfg.description),
+				metric.WithUnit(cfg.unit),
+				metric.WithExplicitBucketBoundaries(
+					0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000,
+				),
+			)
+			if err != nil {
+				return nil, err
+			}
+			*cfg.millisecondsHistogramPtr = histogram
+		} else {
+			return nil, fmt.Errorf("otel instument ptr implementation missing", Error)
+		}
+	}
+	return instruments, nil
 }

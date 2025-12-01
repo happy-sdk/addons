@@ -392,7 +392,7 @@ func (l *Logger) jobExcessiveFileSize(sess *session.Context, file *rotatefile.Fi
 		slog.String("file", file.Name()),
 	)
 
-	l.state.UpdateLogger(func(ls *telemetry.LoggerState) {
+	l.tel.UpdateLogger(func(ls *telemetry.Logger) {
 		ls.Rotations++
 	})
 
@@ -425,7 +425,7 @@ func (l *Logger) jobRotate(sess *session.Context, file *rotatefile.File) error {
 		slog.String("scheduled", rotationSchedule),
 		slog.String("file_name", file.Name()),
 	)
-	l.state.UpdateLogger(func(ls *telemetry.LoggerState) {
+	l.tel.UpdateLogger(func(ls *telemetry.Logger) {
 		ls.Rotations++
 	})
 

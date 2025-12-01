@@ -126,7 +126,7 @@ func Start(sess *session.Context, args action.Args) error {
 	default:
 		return fmt.Errorf("%w: unknown spawn strategy: %v", Error, mode)
 	}
-	sess.Log().NotImplemented("wait startup")
+	sess.Log().Log(sess.Context(), logging.LevelNotImpl.Level(), "wait startup")
 	return nil
 }
 
@@ -144,7 +144,7 @@ func Stop(sess *session.Context, args action.Args) error {
 	if err := daemon.Signal(syscall.SIGTERM); err != nil {
 		return err
 	}
-	sess.Log().NotImplemented("wait shutdown")
+	sess.Log().Log(sess.Context(), logging.LevelNotImpl.Level(), "wait shutdown")
 	return nil
 }
 
@@ -170,17 +170,17 @@ func buildForkArgs(sess *session.Context, name string, args action.Args) []strin
 	return nargs
 }
 
-func logDebug(logger logging.Logger, msg string, args ...slog.Attr) {
+func logDebug(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := os.Getpid()
 	logd.DaemonLog(logger, logging.LevelDebug, ServiceName, int64(pid), msg, args...)
 }
 
-func logInfo(logger logging.Logger, msg string, args ...slog.Attr) {
+func logInfo(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := os.Getpid()
 	logd.DaemonLog(logger, logging.LevelInfo, ServiceName, int64(pid), msg, args...)
 }
 
-func logError(logger logging.Logger, msg string, args ...slog.Attr) {
+func logError(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := os.Getpid()
 	logd.DaemonLog(logger, logging.LevelError, ServiceName, int64(pid), msg, args...)
 }

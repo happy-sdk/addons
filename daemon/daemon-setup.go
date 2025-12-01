@@ -41,7 +41,7 @@ type Setup struct {
 	customCommands map[string]*command.Command
 
 	daemon   *process.Manager
-	state    *telemetry.DaemonState
+	tel      *telemetry.Telemetry
 	services []*services.Service
 }
 
@@ -51,7 +51,7 @@ func (s *Setup) dispose() {
 	s.wrapperCommand = nil
 	s.customCommands = nil
 	s.daemon = nil
-	s.state = nil
+	s.tel = nil
 	s.services = nil
 }
 
@@ -63,8 +63,8 @@ func New(s Settings) *Setup {
 	}
 	setup.settings.Defaults()
 	setup.pid.Store(int64(os.Getpid()))
-	setup.state = telemetry.NewDaemonState()
-	setup.daemon = process.New(setup.state)
+	setup.tel = telemetry.New()
+	setup.daemon = process.New(setup.tel)
 	return setup
 }
 
@@ -175,6 +175,15 @@ func (s *Setup) WithServices(svc ...*services.Service) {
 	}
 }
 
+func (s *Setup) WithMetrics(setup telemetry.Setup) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.isSealed("WithMetricsProvider") {
+		return
+	}
+	s.tel.Setup(setup)
+}
+
 // Addon builds and returns a Happy SDK addon configured with the current Setup.
 //
 // This method performs the final composition of all configured components into
@@ -212,7 +221,7 @@ func (s *Setup) Addon() *addon.Addon {
 
 	a.ProvideServices(
 		ctl.New().Service(),
-		logd.New(s.state).Service(),
+		logd.New(s.tel).Service(),
 		s.daemon.Service(),
 		ipc.New().Service(),
 		dbus.New().Service(),
@@ -228,7 +237,7 @@ func (s *Setup) addonOnRegister(sess session.Register) error {
 
 	if s.errs != nil {
 		for _, err := range s.errs {
-			sess.Log().Errors(err)
+			sess.Log().Error(err.Error())
 		}
 		return fmt.Errorf("%w: daemon addon registration failed", ErrSetup)
 	}
@@ -395,17 +404,17 @@ func (s *Setup) err(msg string) {
 	s.errs = append(s.errs, fmt.Errorf("%w: Setup(%d): %s", ErrSetup, pid, msg))
 }
 
-func (s *Setup) debug(logger logging.Logger, msg string, args ...slog.Attr) {
+func (s *Setup) debug(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := s.pid.Load()
 	logd.DaemonLog(logger, logging.LevelDebug, "daemon-setup", pid, msg, args...)
 }
 
-func (s *Setup) info(logger logging.Logger, msg string, args ...slog.Attr) {
+func (s *Setup) info(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := s.pid.Load()
 	logd.DaemonLog(logger, logging.LevelInfo, "daemon-setup", pid, msg, args...)
 }
 
-func (s *Setup) error(logger logging.Logger, msg string, args ...slog.Attr) {
+func (s *Setup) error(logger *logging.Logger, msg string, args ...slog.Attr) {
 	pid := s.pid.Load()
 	logd.DaemonLog(logger, logging.LevelError, "daemon-setup", pid, msg, args...)
 }

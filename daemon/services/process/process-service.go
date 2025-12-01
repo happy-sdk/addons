@@ -25,15 +25,16 @@ func (m *Manager) Service() *services.Service {
 	defer m.mu.Unlock()
 
 	svc := services.New(service.Config{
-		Name:          "daemon-process",
-		Description:   "Daemon process control service",
+		Slug:          ServiceSlug,
+		Name:          "Daemon process",
+		Description:   "Daemon primary process",
 		RetryOnError:  false,
 		MaxRetries:    3,
 		RetryBackoff:  settings.Duration(5 * time.Second),
 		LoaderTimeout: settings.Duration(time.Second * 5),
 	})
 
-	svc.OnRegister(m.onRegister)
+	svc.OnRegister(m.onRegister(svc))
 	svc.OnStart(m.onStart)
 	svc.OnStop(m.onStop)
 
@@ -41,44 +42,57 @@ func (m *Manager) Service() *services.Service {
 }
 
 // onRegister daemon process manager service
-func (m *Manager) onRegister(sess *session.Context) error {
-	// Set pid file path
+func (m *Manager) onRegister(svc *services.Service) action.Action {
+	return func(sess *session.Context) error {
+		// Set pid file path
 
-	pidfileName := fmt.Sprintf(
-		"%s-daemon.pid",
-		sess.Opts().Get("app.profile.name").String(),
-	)
-	pidfilePath := filepath.Join(
-		sess.Opts().Get("app.fs.path.pids").String(),
-		pidfileName,
-	)
+		pidfileName := fmt.Sprintf(
+			"%s-daemon.pid",
+			sess.Opts().Get("app.profile.name").String(),
+		)
+		pidfilePath := filepath.Join(
+			sess.Opts().Get("app.fs.path.pids").String(),
+			pidfileName,
+		)
 
-	if err := sess.Opts().Set("daemon.process.pidfile", pidfilePath); err != nil {
-		return fmt.Errorf("failed to set daemon pidfile path: %w", err)
-	}
-
-	info, err := sess.ServiceInfo(ServiceName)
-	if err != nil {
-		return err
-	}
-
-	if err := m.reloadPidFile(sess); err != nil {
-		return err
-	}
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	m.state.UpdateProcessManager(func(ls *telemetry.ProcessManagerState) {
-		ls.Service.Name = info.Name()
-		ls.Service.Addr = info.Addr().String()
-		ls.Service.Errors = info.Errs()
-		ls.Service.Status = telemetry.ServiceStatusStopped
-		if sess.Opts().Get("daemon.process.running").Variable().Bool() {
-			ls.Service.Status = telemetry.ServiceStatusRunning
+		if err := sess.Opts().Set("daemon.process.pidfile", pidfilePath); err != nil {
+			return fmt.Errorf("failed to set daemon pidfile path: %w", err)
 		}
-	})
-	m.debug(sess.Log(), "daemon-process service registered")
-	return nil
+
+		if err := m.reloadPidFile(sess); err != nil {
+			return err
+		}
+
+		info, err := sess.ServiceInfo(ServiceSlug)
+		if err != nil {
+			return err
+		}
+
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		m.tel.UpdateProcess(func(ls *telemetry.Process) {
+			ls.Service.Name = info.Name()
+			ls.Service.Slug = info.Slug()
+			ls.Service.Addr = info.Addr().String()
+			ls.Service.Errors = info.Errs()
+			ls.Service.Status = telemetry.ServiceStatusStopped
+			if sess.Opts().Get("daemon.process.running").Variable().Bool() {
+				ls.Service.Status = telemetry.ServiceStatusRunning
+			}
+		})
+
+		svc.Cron(func(schedule services.CronScheduler) {
+			schedule.Job("telemetry snapshot", "@every 2s", func(sess *session.Context) error {
+				m.mu.RLock()
+				defer m.mu.RUnlock()
+				tel := m.tel
+				_, err := tel.Snapshot(sess.Context())
+				return err
+			})
+		})
+		m.debug(sess.Log(), "daemon-process service registered")
+		return nil
+	}
 }
 
 func (m *Manager) onStart(sess *session.Context) (err error) {
@@ -86,7 +100,6 @@ func (m *Manager) onStart(sess *session.Context) (err error) {
 		return ErrAlreadyRunning
 	}
 
-	startedAt := time.Now()
 	m.debug(sess.Log(), fmt.Sprintf("starting %s daemon process...", sess.Get("app.slug")))
 
 	defer func() {
@@ -95,14 +108,23 @@ func (m *Manager) onStart(sess *session.Context) (err error) {
 
 	m.mu.Lock()
 
-	state := m.state
-	state.UpdateProcessManager(func(pms *telemetry.ProcessManagerState) {
+	tel := m.tel
+	if err := tel.Start(sess); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+
+	tel.UpdateProcess(func(pms *telemetry.Process) {
 		pms.Busy = true
 		pms.Service.Status = telemetry.ServiceStatusStarting
 		m.busy.Store(true)
 	})
 
 	_, err = m.pidfileCreate(sess)
+	m.mu.Unlock()
+	if err != nil {
+		return err
+	}
 
 	key := sess.Opts().Get("app.instance.id").String()
 	if v, ok := daemonArgs.Load(key); ok {
@@ -114,14 +136,8 @@ func (m *Manager) onStart(sess *session.Context) (err error) {
 		daemonArgs.Clear()
 	}
 
-	m.mu.Unlock()
-
-	if err != nil {
-		return err
-	}
-
 	if sess.Settings().Get("daemon.log.disabled").Value().Bool() {
-		state.UpdateLogger(func(ls *telemetry.LoggerState) {
+		tel.UpdateLogger(func(ls *telemetry.Logger) {
 			ls.Service.Status = telemetry.ServiceStatusDisabled
 		})
 	} else {
@@ -135,15 +151,15 @@ func (m *Manager) onStart(sess *session.Context) (err error) {
 	}
 
 	defer func() {
-		state.UpdateProcessManager(func(pms *telemetry.ProcessManagerState) {
+		tel.UpdateProcess(func(pms *telemetry.Process) {
 			pms.Busy = false
 			m.busy.Store(false)
 		})
 	}()
-	m.mu.Lock()
+
 	// Initialize signal handler
 	m.osSignalHandler(sess)
-	m.mu.Unlock()
+
 	ipcLoader := services.NewLoader(sess, "daemon-ipc")
 	<-ipcLoader.Load()
 	if err := ipcLoader.Err(); err != nil {
@@ -167,16 +183,24 @@ func (m *Manager) onStart(sess *session.Context) (err error) {
 	}
 
 	// READY
-	state.UpdateProcessManager(func(pms *telemetry.ProcessManagerState) {
+	info, err := sess.ServiceInfo(ServiceSlug)
+	if err != nil {
+		return err
+	}
+	var startUpTook time.Duration
+	tel.UpdateProcess(func(pms *telemetry.Process) {
 		pms.Service.Status = telemetry.ServiceStatusRunning
-		pms.Service.StartUpTook = time.Since(startedAt)
+		startedAt := info.StartedAt()
+		pms.Service.StartedAt = startedAt
+		pms.Service.Errors = info.Errs()
+		startUpTook = time.Since(startedAt)
+		pms.Service.StartUpTook = startUpTook
 	})
 
-	took := state.ProcessManager().Service.StartUpTook
 	m.ok(
 		sess.Log(),
-		fmt.Sprintf("%s daemon process startup took %s", sess.Get("app.slug"), took),
-		slog.Duration("took", took),
+		fmt.Sprintf("%s daemon process startup took %s", sess.Get("app.slug"), startUpTook),
+		slog.Duration("took", startUpTook),
 	)
 	return nil
 }
@@ -186,7 +210,14 @@ func (m *Manager) onStop(sess *session.Context, err error) (serr error) {
 
 	m.mu.RLock()
 
-	state := m.state
+	tel := m.tel
+
+	defer tel.Stop(sess)
+
+	tel.UpdateProcess(func(pms *telemetry.Process) {
+		pms.Busy = true
+		pms.Service.Status = telemetry.ServiceStatusStopping
+	})
 
 	// Stop listening signals
 	if m.cancelSignalHandler != nil {
@@ -199,22 +230,17 @@ func (m *Manager) onStop(sess *session.Context, err error) (serr error) {
 		m.handleStateDeferError(sess, err)
 	}()
 
-	state.UpdateProcessManager(func(pms *telemetry.ProcessManagerState) {
-		pms.Busy = true
-		pms.Service.Status = telemetry.ServiceStatusStopping
-	})
-
 	if err := m.stop(sess); err != nil && !errors.Is(err, ErrDaemonNotRunning) {
 		return err
 	}
 
 	defer func() {
-		state.UpdateProcessManager(func(pms *telemetry.ProcessManagerState) {
+		tel.UpdateProcess(func(pms *telemetry.Process) {
 			pms.Busy = false
 		})
 	}()
 
-	state.UpdateProcessManager(func(pms *telemetry.ProcessManagerState) {
+	tel.UpdateProcess(func(pms *telemetry.Process) {
 		pms.Service.Status = telemetry.ServiceStatusStopped
 		pms.Service.StoppedAt = time.Now()
 	})
@@ -230,10 +256,10 @@ func (m *Manager) onStop(sess *session.Context, err error) (serr error) {
 
 func (m *Manager) handleStateDeferError(sess *session.Context, err error) {
 	m.mu.RLock()
-	state := m.state
+	tel := m.tel
 	m.mu.RUnlock()
-	state.UpdateProcessManager(func(pms *telemetry.ProcessManagerState) {
-		info, infoErr := sess.ServiceInfo(ServiceName)
+	tel.UpdateProcess(func(pms *telemetry.Process) {
+		info, infoErr := sess.ServiceInfo(ServiceSlug)
 		if infoErr != nil {
 			pms.AddError(infoErr)
 			return
