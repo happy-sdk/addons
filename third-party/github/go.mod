@@ -1,24 +1,23 @@
 module github.com/happy-sdk/addons/third-party/github
 
-go 1.24.0
-
-toolchain go1.24.4
+go 1.25
 
 require (
-	github.com/happy-sdk/happy v0.102.0
-	github.com/happy-sdk/happy/pkg/settings v0.7.0
+	github.com/happy-sdk/happy v0.200.0
+	github.com/happy-sdk/happy/pkg/settings v0.8.0
 )
 
 require (
-	github.com/happy-sdk/happy/pkg/i18n v0.2.0 // indirect
-	github.com/happy-sdk/happy/pkg/logging v0.2.4 // indirect
+	github.com/happy-sdk/happy/pkg/bitutils v0.1.0 // indirect
+	github.com/happy-sdk/happy/pkg/i18n v0.2.1 // indirect
+	github.com/happy-sdk/happy/pkg/logging v0.3.0 // indirect
 	github.com/happy-sdk/happy/pkg/networking v0.2.0 // indirect
-	github.com/happy-sdk/happy/pkg/options v0.6.3 // indirect
-	github.com/happy-sdk/happy/pkg/scheduling/cron v0.5.2 // indirect
-	github.com/happy-sdk/happy/pkg/strings/bexp v1.5.2 // indirect
+	github.com/happy-sdk/happy/pkg/options v0.7.0 // indirect
+	github.com/happy-sdk/happy/pkg/scheduling/cron v0.6.0 // indirect
+	github.com/happy-sdk/happy/pkg/strings/bexp v1.6.0 // indirect
 	github.com/happy-sdk/happy/pkg/strings/slug v0.2.1 // indirect
-	github.com/happy-sdk/happy/pkg/vars v0.19.0 // indirect
-	github.com/happy-sdk/happy/pkg/version v0.4.1 // indirect
-	golang.org/x/mod v0.27.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
+	github.com/happy-sdk/happy/pkg/vars v0.20.0 // indirect
+	github.com/happy-sdk/happy/pkg/version v0.5.0 // indirect
+	golang.org/x/mod v0.30.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
 )

@@ -12,12 +12,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/happy-sdk/happy/pkg/bytesize"
 	"github.com/happy-sdk/happy/pkg/logging"
 	"github.com/happy-sdk/happy/pkg/options"
 	"github.com/happy-sdk/happy/pkg/scheduling/cron"
 	"github.com/happy-sdk/happy/pkg/settings"
+	"github.com/happy-sdk/happy/sdk/session"
 )
 
 const (
@@ -26,6 +28,7 @@ const (
 	OutputArchiveDirName      = "output_archives"
 	LogArchiveBatchDirName    = "last_logs"
 	LogArchiveDirName         = "log_archives"
+	BackupPrefix              = "logs_backup_"
 )
 
 var (
@@ -127,6 +130,16 @@ func DaemonLog(logger logging.Logger, lvl logging.Level, label string, pid int64
 		slog.Int64("pid", pid),
 	))
 	logger.LogDepth(2, lvl, msg, args...)
+}
+
+func GetNextBackupPaths(sess *session.Context) (dir, archive string, err error) {
+	backupsDir := filepath.Join(sess.Get("daemon.fs.path.backups").String(), "logs")
+	if err = os.MkdirAll(backupsDir, 0755); err != nil {
+		return dir, archive, err
+	}
+	archive = getArchivePath(backupsDir, fmt.Sprintf("%s%s", BackupPrefix, time.Now().Format("20060102")), ".tar.gz")
+	dir = strings.TrimSuffix(archive, ".tar.gz")
+	return dir, archive, nil
 }
 
 // getArchivePath constructs correct name for next available sequence

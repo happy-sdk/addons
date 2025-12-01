@@ -19,6 +19,7 @@ import (
 
 	"github.com/happy-sdk/addons/devel/pkg/gitutils"
 	"github.com/happy-sdk/addons/devel/project"
+	"github.com/happy-sdk/happy/pkg/logging"
 	"github.com/happy-sdk/happy/pkg/settings"
 	"github.com/happy-sdk/happy/pkg/strings/bexp"
 	"github.com/happy-sdk/happy/sdk/session"
@@ -84,7 +85,7 @@ func (api *API) List(sess *session.Context, withSubprojects, all, fresh bool) (i
 
 func (api *API) loadFromCache(sess *session.Context, withSubprojects, all bool) ([]project.DirInfo, bool) {
 	cacheFileName := fmt.Sprintf("projects-list-%t-%t.json", withSubprojects, all)
-	cacheFilePath := filepath.Join(sess.Get("app.fs.path.cache").String(), cacheFileName)
+	cacheFilePath := filepath.Join(sess.Get("app.fs.path.profile.cache").String(), cacheFileName)
 
 	// Check if cache file exists
 	if _, err := os.Stat(cacheFilePath); err != nil {
@@ -148,7 +149,7 @@ func (api *API) generateFreshProjectList(sess *session.Context, withSubprojects,
 
 	searchPaths, searchWD := resolveSearchPaths(search, ignore, wd)
 	if searchWD {
-		sess.Log().NotImplemented("should add wd to saved search paths")
+		sess.Log().Log(sess.Context(), logging.LevelNotImpl.Level(), "should add wd to saved search paths")
 	}
 
 	api.mu.RLock()
@@ -162,7 +163,7 @@ func (api *API) generateFreshProjectList(sess *session.Context, withSubprojects,
 
 func (api *API) saveToCache(sess *session.Context, projects []project.DirInfo, withSubprojects, all bool) error {
 	cacheFileName := fmt.Sprintf("projects-list-%t-%t.json", withSubprojects, all)
-	cacheFilePath := filepath.Join(sess.Get("app.fs.path.cache").String(), cacheFileName)
+	cacheFilePath := filepath.Join(sess.Get("app.fs.path.profile.cache").String(), cacheFileName)
 
 	cache := cacheList{
 		CreatedAt: time.Now(),

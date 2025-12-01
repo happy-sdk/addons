@@ -78,6 +78,9 @@ type PathSettings struct {
 	// Data specifies the path to the daemon’s data directory.
 	Data settings.String `key:"data,save" mutation:"once"`
 
+	// Backups specifies the path to the daemon’s backup directory.
+	Backups settings.String `key:"backups,save" mutation:"once"`
+
 	// Logs specifies the path to the daemon’s logs directory.
 	Logs settings.String `key:"logs,save" mutation:"once"`
 

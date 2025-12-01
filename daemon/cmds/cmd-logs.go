@@ -49,10 +49,89 @@ func Logs(category string) *command.Command {
 
 func logsBackup() *command.Command {
 	cmd := command.New("backup", command.Config{
-		Description: "Backup creates single archive from all ",
+		Description: "Backup creates single archive from all logs",
 	})
 
 	cmd.Do(func(sess *session.Context, args action.Args) error {
+
+		dir, archive, err := logd.GetNextBackupPaths(sess)
+		if err != nil {
+			return err
+		}
+		var (
+			logArchivesDir              = filepath.Join(sess.Get("daemon.fs.path.logs").String(), "archive")
+			logArchiveBatchDir          = filepath.Join(sess.Get("daemon.fs.path.logs").String(), logd.LogArchiveBatchDirName)
+			outputArchiveBatchDir       = filepath.Join(sess.Get("daemon.fs.path.logs").String(), logd.OutputArchiveBatchDirName)
+			totalSize             int64 = 0
+		)
+
+		logArchivesDirSize, err := fsutils.DirSize(logArchivesDir)
+		if err == nil {
+			sess.Log().Debug(fmt.Sprintf("log archives size %s", bytesize.SISize(logArchivesDirSize).String()))
+			totalSize += logArchivesDirSize
+		}
+		logArchiveBatchDirSize, err := fsutils.DirSize(logArchiveBatchDir)
+		if err == nil {
+			sess.Log().Debug(fmt.Sprintf("log batch size %s", bytesize.SISize(logArchiveBatchDirSize).String()))
+			totalSize += logArchiveBatchDirSize
+		}
+		outputArchiveBatchDirSize, err := fsutils.DirSize(outputArchiveBatchDir)
+		if err == nil {
+			sess.Log().Debug(fmt.Sprintf("output batch size %s", bytesize.SISize(outputArchiveBatchDirSize).String()))
+			totalSize += outputArchiveBatchDirSize
+		}
+		if totalSize == 0 {
+			sess.Log().Notice("no logs to backup")
+			return nil
+		}
+
+		if err := os.MkdirAll(dir, 0750); err != nil {
+			return err
+		}
+
+		sess.Log().Info(fmt.Sprintf("%s of logs to backup", bytesize.SISize(totalSize).String()))
+
+		if logArchivesDirSize > 0 {
+			logArchivesDestDir := filepath.Join(dir, filepath.Base(logArchivesDir))
+			if err := os.Rename(logArchivesDir, logArchivesDestDir); err != nil {
+				return err
+			}
+			sess.Log().Debug("moved log archives")
+		}
+
+		if logArchiveBatchDirSize > 0 {
+			logArchiveBatchDestDir := filepath.Join(dir, filepath.Base(logArchiveBatchDir))
+			if err := os.Rename(logArchiveBatchDir, logArchiveBatchDestDir); err != nil {
+				return err
+			}
+			sess.Log().Debug("moved log archive batch")
+		}
+
+		if outputArchiveBatchDirSize > 0 {
+			outputArchiveBatchDestDir := filepath.Join(dir, filepath.Base(outputArchiveBatchDir))
+			if err := os.Rename(outputArchiveBatchDir, outputArchiveBatchDestDir); err != nil {
+				return err
+			}
+			sess.Log().Debug("moved output archive batch")
+		}
+
+		if err := fsutils.BackupDir(sess.Context(), dir, archive, true, nil); err != nil {
+			return err
+		}
+		stat, err := fsutils.Stat(archive)
+		if err != nil {
+			return err
+		}
+		sess.Log().Ok(fmt.Sprintf(
+			"created archive %s %s from %s of log files",
+			stat.Name,
+			bytesize.SISize(stat.Size).String(),
+			bytesize.SISize(totalSize).String(),
+		))
+
+		// mv /home/mkungla/.local/share/digactl/profiles/default/backups/digafind/logs/logs_backup_20250901 \
+		// /home/mkungla/.local/state/digactl/profiles/default/logs/digafind/archive/test_2
+
 		return nil
 	})
 
@@ -90,11 +169,20 @@ func logsStat() *command.Command {
 			textfmt.TableTitle(fmt.Sprintf("Dir: %s", logdir)),
 		)
 
-		info.AddRow("Total size:", bytesize.SISize(dirsize).String())
-		info.AddRow("Total archive size:", bytesize.SISize(tadirsize).String())
-		info.AddRow("Total files:", fmt.Sprint(filec))
+		backupsDir := filepath.Join(sess.Get("daemon.fs.path.backups").String(), "logs")
+		backupsSize, _ := fsutils.DirSize(backupsDir)
+		backupc, _, _ := fsutils.CountFilesAndDirs(backupsDir)
+
+		info.AddRow("Log dir size:", bytesize.SISize(dirsize).String())
+		info.AddRow("Archive size:", bytesize.SISize(tadirsize).String())
+		info.AddRow("Log files:", fmt.Sprint(filec))
 		info.AddRow("Archive schedule:", sess.Settings().Get("daemon.log.archive_schedule").String())
 		info.AddRow("Retention period:", sess.Settings().Get("daemon.log.archive_retention_period").Value().Duration().String())
+
+		info.AddDivider()
+		info.AddRow("Backups dir:", backupsDir)
+		info.AddRow("Backups:", fmt.Sprint(backupc))
+		info.AddRow("Backups toal size:", bytesize.SISize(backupsSize).String())
 
 		op := args.Flag("output").Present()
 		lp := args.Flag("logs").Present()
