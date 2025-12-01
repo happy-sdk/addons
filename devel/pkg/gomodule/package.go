@@ -191,13 +191,15 @@ func (p *Package) LoadReleaseInfo(sess *session.Context, rootPath, remoteName st
 		}
 		nextReleaseTagVersion := version.Version(path.Base(p.NextReleaseTag))
 		lastReleaseTagVersion := version.Version(path.Base(p.LastReleaseTag))
-		if nextReleaseTagVersion.IsValid() {
-			if version.Compare(nextVersion, nextReleaseTagVersion) == 1 {
+
+		if lastReleaseTagVersion.IsValid() {
+			if version.Compare(nextVersion, lastReleaseTagVersion) == 1 {
 				p.NextReleaseTag = fmt.Sprintf("%s%s", p.TagPrefix, nextVersion)
 				p.NeedsRelease = true
 			}
-		} else if lastReleaseTagVersion.IsValid() {
-			if version.Compare(nextVersion, lastReleaseTagVersion) == 1 {
+		}
+		if nextReleaseTagVersion.IsValid() && len(nextVersionBytes) > 0 {
+			if version.Compare(nextVersion, nextReleaseTagVersion) == 1 {
 				p.NextReleaseTag = fmt.Sprintf("%s%s", p.TagPrefix, nextVersion)
 				p.NeedsRelease = true
 			}
