@@ -8,12 +8,12 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/go-git/go-git/v5 v5.16.4
 	github.com/goccy/go-yaml v1.19.0
-	github.com/happy-sdk/happy/pkg/devel/testutils v1.2.0
-	github.com/happy-sdk/happy/pkg/options v0.7.0
-	github.com/happy-sdk/happy/pkg/settings v0.8.0
-	github.com/happy-sdk/happy/pkg/strings/bexp v1.6.0
-	github.com/happy-sdk/happy/pkg/vars v0.20.0
-	github.com/happy-sdk/happy/pkg/version v0.5.0
+	github.com/happy-sdk/happy/pkg/devel/testutils v1.3.0
+	github.com/happy-sdk/happy/pkg/options v0.8.0
+	github.com/happy-sdk/happy/pkg/settings v1.1.0
+	github.com/happy-sdk/happy/pkg/strings/bexp v1.7.0
+	github.com/happy-sdk/happy/pkg/vars v1.0.1
+	github.com/happy-sdk/happy/pkg/version v0.6.0
 	golang.org/x/mod v0.30.0
 )
 
@@ -21,7 +21,7 @@ require (
 	github.com/clipperhouse/displaywidth v0.6.1 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.3.0 // indirect
-	github.com/happy-sdk/happy/pkg/bitutils v0.1.0 // indirect
+	github.com/happy-sdk/happy/pkg/bitutils v0.1.1 // indirect
 	golang.org/x/term v0.37.0 // indirect
 )
 
@@ -36,14 +36,14 @@ require (
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.6.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/happy-sdk/happy v0.200.0
-	github.com/happy-sdk/happy/pkg/devel/goutils v0.2.0
-	github.com/happy-sdk/happy/pkg/fsutils v0.4.0
-	github.com/happy-sdk/happy/pkg/i18n v0.2.1 // indirect
-	github.com/happy-sdk/happy/pkg/logging v0.3.0
-	github.com/happy-sdk/happy/pkg/networking v0.2.0 // indirect
-	github.com/happy-sdk/happy/pkg/scheduling/cron v0.6.0 // indirect
-	github.com/happy-sdk/happy/pkg/strings/slug v0.2.1 // indirect
+	github.com/happy-sdk/happy v0.304.0
+	github.com/happy-sdk/happy/pkg/devel/goutils v0.3.0
+	github.com/happy-sdk/happy/pkg/fsutils v1.0.0
+	github.com/happy-sdk/happy/pkg/i18n v1.0.0 // indirect
+	github.com/happy-sdk/happy/pkg/logging v0.6.0
+	github.com/happy-sdk/happy/pkg/networking v0.3.0 // indirect
+	github.com/happy-sdk/happy/pkg/scheduling/cron v0.7.0 // indirect
+	github.com/happy-sdk/happy/pkg/strings/slug v0.3.0 // indirect
 	github.com/happy-sdk/lib/taskrunner v0.8.1
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
