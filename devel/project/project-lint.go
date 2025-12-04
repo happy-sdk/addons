@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/happy-sdk/happy/sdk/cli"
 	"github.com/happy-sdk/happy/sdk/session"
@@ -55,6 +56,10 @@ func (prj *Project) lintTasks(sess *session.Context) []tr.Task {
 	if prj.Config().Get("linter.golangci-lint.enabled").Value().Bool() {
 		gloangciLintBin := prj.Config().Get("linter.golangci-lint.path").String()
 		for _, gomodule := range gomodules {
+			// Respect config ignore list (from .happy.yaml: ignore: [])
+			if prj.isIgnoredModule(gomodule.Dir) {
+				continue
+			}
 			name := gomodule.TagPrefix
 			if gomodule.TagPrefix == "" {
 				name = filepath.Base(gomodule.Dir)
@@ -74,4 +79,31 @@ func (prj *Project) lintTasks(sess *session.Context) []tr.Task {
 	}
 
 	return tasks
+}
+
+// isIgnoredModule reports whether the given module directory should be
+// skipped based on the project's "ignore" list from .happy.yaml.
+func (prj *Project) isIgnoredModule(modDir string) bool {
+	ignores := prj.Config().Get("ignore").Value().Fields()
+	if len(ignores) == 0 {
+		return false
+	}
+
+	// Compute module path relative to project root for matching.
+	rel, err := filepath.Rel(prj.dir.Path, modDir)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+
+	for _, pat := range ignores {
+		if pat == "" {
+			continue
+		}
+		pat = filepath.ToSlash(pat)
+		if rel == pat || strings.HasPrefix(rel, pat+"/") {
+			return true
+		}
+	}
+	return false
 }

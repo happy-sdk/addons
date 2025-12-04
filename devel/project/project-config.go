@@ -20,6 +20,11 @@ import (
 type Config struct {
 	Version version.Setting `key:"version,save" default:"v1.0.0"`
 
+	// Ignore defines project-relative paths that should be skipped by
+	// tooling such as lint and test. This mirrors the top-level
+	// "ignore" list in .happy.yaml.
+	Ignore settings.StringSlice `key:"ignore,save"`
+
 	Changelog    changelog.Config   `key:"changelog"`
 	Git          GitConfig          `key:"git"`
 	Linter       LinterConfig       `key:"linter"`

@@ -63,6 +63,11 @@ func (prj *Project) testTasks(sess *session.Context) []tr.Task {
 			name = filepath.Base(gomodule.Dir)
 		}
 
+		// Respect config ignore list (from .happy.yaml: ignore: [])
+		if prj.isIgnoredModule(gomodule.Dir) {
+			continue
+		}
+
 		t := tr.NewTask(name, func(ex *tr.Executor) (res tr.Result) {
 			// Get packages belonging to module
 			localPkgsCmd := exec.Command("go", "list", "./...")
