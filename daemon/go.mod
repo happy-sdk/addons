@@ -5,6 +5,7 @@ go 1.24.4
 require (
 	github.com/google/uuid v1.6.0
 	github.com/happy-sdk/happy v0.200.0
+	github.com/happy-sdk/happy/lib/tail v0.1.0
 	github.com/happy-sdk/happy/pkg/fsutils v0.4.0
 	github.com/happy-sdk/happy/pkg/logging v0.3.0
 	github.com/happy-sdk/happy/pkg/options v0.7.0

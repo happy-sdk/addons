@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/happy-sdk/addons/daemon/services/logd"
+	"github.com/happy-sdk/happy/lib/tail"
 	"github.com/happy-sdk/happy/pkg/bytesize"
 	"github.com/happy-sdk/happy/pkg/fsutils"
 	"github.com/happy-sdk/happy/pkg/fsutils/rotatefile"
@@ -30,7 +31,6 @@ import (
 	"github.com/happy-sdk/happy/sdk/cli"
 	"github.com/happy-sdk/happy/sdk/cli/command"
 	"github.com/happy-sdk/happy/sdk/session"
-	"github.com/happy-sdk/lib/tail"
 )
 
 func Logs(category string) *command.Command {
